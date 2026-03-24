@@ -146,3 +146,7 @@ All settings can also be passed as environment variables or CLI flags.
 - API keys for at least one provider (Anthropic, OpenAI, Google)
 - `codex` CLI (for Codex solver/coordinator)
 - `claude` CLI (bundled with claude-agent-sdk)
+
+## Acknowledgements
+
+- [es3n1n/Eruditus](https://github.com/es3n1n/Eruditus) — CTFd interaction and HTML helpers in `pull_challenges.py`

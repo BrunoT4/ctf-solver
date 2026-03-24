@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Pull challenges from a CTFd instance to a local directory.
 
+CTFd interaction and HTML helpers based on es3n1n/Eruditus
+(https://github.com/es3n1n/Eruditus) — thank you!
+
 Usage:
     python pull_challenges.py --url https://ctf.example.com \
         --username myteam --password s3cr3t [--output ./challenges]
