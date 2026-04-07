@@ -5,7 +5,6 @@ This repository **builds on** [**verialabs/ctf-agent**](https://github.com/veria
 **What this fork adds**
 
 - **Pluggable CTF platforms** — connectors live under [`backend/platforms/`](backend/platforms/); set `PLATFORM` in `.env` or use `--platform`.  [adding a site](backend/platforms/ADDING_A_PLATFORM.md) means a new package + registry entry.
-- **picoCTF** — session-cookie auth and API integration alongside existing CTFd support.
 - **Swarm logs** — per-run directories under `logs/` with `manifest.json` and JSONL traces per model.
 - **Write-ups** — optional educational Markdown under `write-ups/`, generated from logs + challenge text (when API keys are configured).
 - **`ctf-pull`** — bulk download of challenges to disk using the **same** connector as `ctf-solve` (no separate CTFd-only script path).
