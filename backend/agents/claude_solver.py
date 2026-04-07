@@ -70,7 +70,7 @@ class ClaudeSolver:
         model_spec: str,
         challenge_dir: str,
         meta: ChallengeMeta,
-        ctfd: PlatformClient,
+        platform_client: PlatformClient,
         cost_tracker: CostTracker,
         settings: object,
         cancel_event: asyncio.Event | None = None,
@@ -85,7 +85,7 @@ class ClaudeSolver:
         self.model_id = model_id_from_spec(model_spec)
         self.challenge_dir = challenge_dir
         self.meta = meta
-        self.ctfd = ctfd
+        self.platform_client = platform_client
         self.cost_tracker = cost_tracker
         self.settings = settings
         self.cancel_event = cancel_event or asyncio.Event()
@@ -190,7 +190,9 @@ class ClaudeSolver:
                             display, confirmed = await self.submit_fn(flag_val)
                         else:
                             from backend.tools.core import do_submit_flag
-                            display, confirmed = await do_submit_flag(self.ctfd, self.meta.name, flag_val)
+                            display, confirmed = await do_submit_flag(
+                                self.platform_client, self.meta.name, flag_val
+                            )
                         result_msg = display
                         if confirmed:
                             self._confirmed = True
@@ -370,12 +372,15 @@ class ClaudeSolver:
                         )[:2000]
 
                     output = getattr(message, "structured_output", None)
-                    if output and isinstance(output, dict):
-                        if output.get("type") == "flag_found":
-                            self._flag = output.get("flag")
-                            self._findings = f"Flag found via {output.get('method', '?')}: {self._flag}"
-                            if self.no_submit:
-                                self._confirmed = True
+                    if (
+                        output
+                        and isinstance(output, dict)
+                        and output.get("type") == "flag_found"
+                    ):
+                        self._flag = output.get("flag")
+                        self._findings = f"Flag found via {output.get('method', '?')}: {self._flag}"
+                        if self.no_submit:
+                            self._confirmed = True
 
             self.tracer.event("turn_complete", duration=round(time.monotonic() - t0, 1), cost=round(self._cost_usd, 4))
 

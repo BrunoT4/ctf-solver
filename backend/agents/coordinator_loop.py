@@ -42,7 +42,7 @@ def build_deps(
     Path(challenges_root).mkdir(parents=True, exist_ok=True)
 
     deps = CoordinatorDeps(
-        ctfd=platform_client,
+        platform_client=platform_client,
         cost_tracker=cost_tracker,
         settings=settings,
         model_specs=specs,
@@ -87,7 +87,7 @@ async def run_event_loop(
 
     Args:
         deps: Coordinator dependencies (shared state).
-        platform_client: CTFd or picoCTF client (for poller).
+        platform_client: Registered platform connector (for poller).
         cost_tracker: Cost tracker.
         turn_fn: Async function that sends a message to the coordinator LLM.
         status_interval: Seconds between status updates.

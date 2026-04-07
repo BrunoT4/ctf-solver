@@ -37,16 +37,15 @@ __all__ = [
 ]
 
 
-def resolve_model(spec: str, settings: "Settings") -> Any:
+def resolve_model(spec: str, settings: Settings) -> Any:
     """Resolve a 'provider/model_id' spec to a Pydantic AI Model."""
+    import boto3
     from pydantic_ai.models.bedrock import BedrockConverseModel
     from pydantic_ai.models.google import GoogleModel
     from pydantic_ai.models.openai import OpenAIModel
     from pydantic_ai.providers.bedrock import BedrockProvider
     from pydantic_ai.providers.google import GoogleProvider
     from pydantic_ai.providers.openai import OpenAIProvider
-
-    import boto3
 
     provider = provider_from_spec(spec)
     model_id = model_id_from_spec(spec)

@@ -1,10 +1,14 @@
 """SDK-agnostic tool logic — pure async functions, no Pydantic AI types."""
 
+from __future__ import annotations
+
 import json
 import shlex
 from pathlib import Path
 
 import httpx
+
+from backend.deps import PlatformClient
 
 MAX_OUTPUT = 24_000
 
@@ -73,14 +77,16 @@ async def do_list_files(sandbox, path: str = "/challenge/distfiles") -> str:
     return out or f"{path} is empty."
 
 
-async def do_submit_flag(ctfd, challenge_name: str, flag: str) -> tuple[str, bool]:
+async def do_submit_flag(
+    platform_client: PlatformClient, challenge_name: str, flag: str
+) -> tuple[str, bool]:
     """Submit a flag. Returns (display_message, is_confirmed)."""
     flag = flag.strip()
     if not flag:
         return "Empty flag — nothing to submit.", False
 
     try:
-        result = await ctfd.submit_flag(challenge_name, flag)
+        result = await platform_client.submit_flag(challenge_name, flag)
         is_confirmed = result.status in ("correct", "already_solved")
         return result.display, is_confirmed
     except Exception as e:

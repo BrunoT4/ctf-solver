@@ -72,7 +72,7 @@ class ChallengeSwarm:
 
     challenge_dir: str
     meta: ChallengeMeta
-    ctfd: PlatformClient
+    platform_client: PlatformClient
     cost_tracker: CostTracker
     settings: Settings
     model_specs: list[str] = field(default_factory=lambda: list(DEFAULT_MODELS))
@@ -117,7 +117,7 @@ class ChallengeSwarm:
                 model_spec=model_spec,
                 challenge_dir=self.challenge_dir,
                 meta=self.meta,
-                ctfd=self.ctfd,
+                platform_client=self.platform_client,
                 cost_tracker=self.cost_tracker,
                 settings=self.settings,
                 cancel_event=self.cancel_event,
@@ -134,7 +134,7 @@ class ChallengeSwarm:
                 model_spec=model_spec,
                 challenge_dir=self.challenge_dir,
                 meta=self.meta,
-                ctfd=self.ctfd,
+                platform_client=self.platform_client,
                 cost_tracker=self.cost_tracker,
                 settings=self.settings,
                 cancel_event=self.cancel_event,
@@ -162,7 +162,7 @@ class ChallengeSwarm:
             model_spec=model_spec,
             challenge_dir=self.challenge_dir,
             meta=self.meta,
-            ctfd=self.ctfd,
+            platform_client=self.platform_client,
             cost_tracker=self.cost_tracker,
             settings=self.settings,
             cancel_event=self.cancel_event,
@@ -218,7 +218,7 @@ class ChallengeSwarm:
             self._submitted_flags.add(normalized)
 
             from backend.tools.core import do_submit_flag
-            display, is_confirmed = await do_submit_flag(self.ctfd, self.meta.name, flag)
+            display, is_confirmed = await do_submit_flag(self.platform_client, self.meta.name, flag)
             if is_confirmed:
                 self.confirmed_flag = normalized
             else:
@@ -348,8 +348,8 @@ class ChallengeSwarm:
 
     async def refresh_platform_metadata(self) -> None:
         """picoCTF: start a fresh instance and sync ``metadata.yml`` before solving."""
-        prov = getattr(self.ctfd, "provision_fresh_instance_for_challenge_name", None)
-        patch = getattr(self.ctfd, "patch_local_metadata_from_merged_challenge", None)
+        prov = getattr(self.platform_client, "provision_fresh_instance_for_challenge_name", None)
+        patch = getattr(self.platform_client, "patch_local_metadata_from_merged_challenge", None)
         if prov is None or patch is None:
             return
         try:

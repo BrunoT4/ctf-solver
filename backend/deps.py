@@ -23,7 +23,7 @@ SubmitFn = Callable[[str], Coroutine[Any, Any, tuple[str, bool]]]
 @dataclass
 class SolverDeps:
     sandbox: DockerSandbox
-    ctfd: PlatformClient
+    platform_client: PlatformClient
     challenge_dir: str
     challenge_name: str
     workspace_dir: str
@@ -39,7 +39,7 @@ class SolverDeps:
 
 @dataclass
 class CoordinatorDeps:
-    ctfd: PlatformClient
+    platform_client: PlatformClient
     cost_tracker: CostTracker
     settings: Any
     model_specs: list[str] = field(default_factory=list)

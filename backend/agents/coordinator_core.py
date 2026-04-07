@@ -52,7 +52,8 @@ async def finalize_swarm_log_bundle(
             logger.warning("Write-up failed for %s", manifest_path, exc_info=True)
 
 
-def _safe_challenge_slug(name: str) -> str:
+def safe_challenge_slug(name: str) -> str:
+    """Filesystem-safe slug for log dirs (shared by CLI single-challenge mode and coordinator)."""
     s = re.sub(r'[<>:"/\\|?*.\x00-\x1f]', "", name.lower().strip())
     s = re.sub(r"[\s_]+", "-", s)
     s = re.sub(r"-+", "-", s).strip("-") or "challenge"
@@ -60,8 +61,8 @@ def _safe_challenge_slug(name: str) -> str:
 
 
 async def do_fetch_challenges(deps: CoordinatorDeps) -> str:
-    challenges = await deps.ctfd.fetch_all_challenges()
-    solved = await deps.ctfd.fetch_solved_names()
+    challenges = await deps.platform_client.fetch_all_challenges()
+    solved = await deps.platform_client.fetch_solved_names()
     result = [
         {
             "name": ch.get("name", "?"),
@@ -77,7 +78,7 @@ async def do_fetch_challenges(deps: CoordinatorDeps) -> str:
 
 
 async def do_get_solve_status(deps: CoordinatorDeps) -> str:
-    solved = await deps.ctfd.fetch_solved_names()
+    solved = await deps.platform_client.fetch_solved_names()
     swarm_status = {name: swarm.get_status() for name, swarm in deps.swarms.items()}
     return json.dumps({"solved": sorted(solved), "active_swarms": swarm_status}, indent=2)
 
@@ -102,15 +103,15 @@ async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
 
     # Auto-pull challenge if needed
     if challenge_name not in deps.challenge_dirs:
-        challenges = await deps.ctfd.fetch_all_challenges()
+        challenges = await deps.platform_client.fetch_all_challenges()
         ch_data = next((c for c in challenges if c.get("name") == challenge_name), None)
         if not ch_data:
-            return f"Challenge '{challenge_name}' not found on CTFd"
-        prov = getattr(deps.ctfd, "provision_fresh_instance", None)
+            return f"Challenge '{challenge_name}' not found on the platform"
+        prov = getattr(deps.platform_client, "provision_fresh_instance", None)
         if prov:
             ch_data = await prov(ch_data)
         output_dir = str(Path(deps.challenges_root))
-        ch_dir = await deps.ctfd.pull_challenge(ch_data, output_dir)
+        ch_dir = await deps.platform_client.pull_challenge(ch_data, output_dir)
         deps.challenge_dirs[challenge_name] = ch_dir
         deps.challenge_metas[challenge_name] = ChallengeMeta.from_yaml(Path(ch_dir) / "metadata.yml")
 
@@ -119,7 +120,7 @@ async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
     settings = deps.settings
     log_base = getattr(settings, "log_base", "logs")
     run_id = (deps.log_run_id or getattr(settings, "log_run_id", "") or "default").strip()
-    slug = _safe_challenge_slug(challenge_name)
+    slug = safe_challenge_slug(challenge_name)
     bundle = Path(log_base) / run_id / slug
     bundle.mkdir(parents=True, exist_ok=True)
     (bundle / "swarm").mkdir(exist_ok=True)
@@ -140,7 +141,7 @@ async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
     swarm = ChallengeSwarm(
         challenge_dir=deps.challenge_dirs[challenge_name],
         meta=deps.challenge_metas[challenge_name],
-        ctfd=deps.ctfd,
+        platform_client=deps.platform_client,
         cost_tracker=deps.cost_tracker,
         settings=deps.settings,
         model_specs=deps.model_specs,
@@ -179,7 +180,7 @@ async def do_submit_flag(deps: CoordinatorDeps, challenge_name: str, flag: str) 
     if deps.no_submit:
         return f'DRY RUN — would submit "{flag.strip()}" for {challenge_name}'
     try:
-        result = await deps.ctfd.submit_flag(challenge_name, flag)
+        result = await deps.platform_client.submit_flag(challenge_name, flag)
         return result.display
     except Exception as e:
         return f"submit_flag error: {e}"

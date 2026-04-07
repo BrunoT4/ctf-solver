@@ -16,6 +16,7 @@ from pathlib import Path
 import click
 
 from backend.config import Settings
+from backend.platforms import build_platform_client, list_registered_platforms
 
 
 @click.command()
@@ -50,8 +51,6 @@ def main(
     pico_cookies: str | None,
 ) -> None:
     """Pull all (or selected) challenges into <output>/<slug>/ via the platform connector."""
-    from backend.platforms import build_platform_client, list_registered_platforms
-
     if list_platforms:
         for pid in list_registered_platforms():
             click.echo(pid)
@@ -91,8 +90,6 @@ def main(
 
 
 async def _pull_all(settings: Settings, output_dir: Path, only_names: frozenset[str]) -> None:
-    from backend.platforms import build_platform_client
-
     output_dir.mkdir(parents=True, exist_ok=True)
     client = build_platform_client(settings)
     try:
@@ -108,14 +105,29 @@ async def _pull_all(settings: Settings, output_dir: Path, only_names: frozenset[
             return
 
         count = 0
+        prov = getattr(client, "provision_fresh_instance", None)
+        if prov and settings.platform.strip().lower() == "picoctf":
+            click.echo("  (picoCTF: fresh instance per challenge before pull — same as coordinator)")
+
         for ch in challenges:
             cname = ch.get("name", "?")
             ccat = ch.get("category", "?")
             cval = ch.get("value", ch.get("score", 0))
             click.echo(f"  [{ccat}] {cname} ({cval} pts)")
+            if prov:
+                ch = await prov(ch)
+                conn = (ch.get("connection_info") or "").strip()
+                if conn:
+                    click.echo(f"    connection_info: {conn[:120]}{'…' if len(conn) > 120 else ''}")
+                else:
+                    click.echo("    connection_info: (empty — static challenge or instance still provisioning)")
             await client.pull_challenge(ch, str(output_dir.resolve()))
             count += 1
 
         click.echo(f"\nDone. Pulled {count} challenge(s) to {output_dir.resolve()}")
     finally:
         await client.close()
+
+
+if __name__ == "__main__":
+    main()

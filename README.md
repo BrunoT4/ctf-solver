@@ -56,8 +56,15 @@ Each solver runs in an isolated Docker container with CTF tools pre-installed. S
 ## Quick Start
 
 ```bash
-# Install
+# Install (editable package + deps — required so `ctf-pull` / `ctf-solve` can import `backend`)
 uv sync
+
+# If you see `ModuleNotFoundError: No module named 'backend'`, reinstall the project from the repo root:
+#   uv pip install -e .
+# Or run via uv (adds the package to the path):
+#   uv run ctf-pull --help
+# Or from the repo root without an editable install:
+#   PYTHONPATH=. .venv/bin/python -m backend.pull_challenges_cli --help
 
 # Build sandbox image
 docker build -f sandbox/Dockerfile.sandbox -t ctf-sandbox .

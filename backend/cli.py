@@ -91,9 +91,9 @@ def main(
     """
     _setup_logging(verbose)
 
-    if list_platforms:
-        from backend.platforms import list_registered_platforms
+    from backend.platforms import list_registered_platforms
 
+    if list_platforms:
         for pid in list_registered_platforms():
             console.print(pid)
         sys.exit(0)
@@ -120,8 +120,6 @@ def main(
     if writeup_force:
         settings.writeup_force = True
     settings.max_concurrent_challenges = max_challenges
-
-    from backend.platforms import list_registered_platforms
 
     pid = settings.platform.strip().lower()
     registered = list_registered_platforms()
@@ -170,10 +168,10 @@ async def _run_single(
     max_challenges: int,
 ) -> None:
     """Run a single challenge with a swarm."""
-    from backend.agents.coordinator_core import finalize_swarm_log_bundle, _safe_challenge_slug
-    from backend.platforms import build_platform_client
+    from backend.agents.coordinator_core import finalize_swarm_log_bundle, safe_challenge_slug
     from backend.agents.swarm import ChallengeSwarm
     from backend.cost_tracker import CostTracker
+    from backend.platforms import build_platform_client
     from backend.prompts import ChallengeMeta
     from backend.sandbox import cleanup_orphan_containers, configure_semaphore
     from backend.solver_base import FLAG_FOUND
@@ -197,7 +195,7 @@ async def _run_single(
     platform_client = build_platform_client(settings)
     cost_tracker = CostTracker()
 
-    slug = _safe_challenge_slug(meta.name)
+    slug = safe_challenge_slug(meta.name)
     bundle = Path(settings.log_base) / settings.log_run_id / slug
     bundle.mkdir(parents=True, exist_ok=True)
     (bundle / "swarm").mkdir(exist_ok=True)
@@ -224,7 +222,7 @@ async def _run_single(
     swarm = ChallengeSwarm(
         challenge_dir=str(challenge_path),
         meta=meta,
-        ctfd=platform_client,
+        platform_client=platform_client,
         cost_tracker=cost_tracker,
         settings=settings,
         model_specs=model_specs,

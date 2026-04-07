@@ -19,7 +19,9 @@ async def submit_flag(ctx: RunContext[SolverDeps], flag: str) -> str:
     if ctx.deps.submit_fn:
         display, is_confirmed = await ctx.deps.submit_fn(flag)
     else:
-        display, is_confirmed = await do_submit_flag(ctx.deps.ctfd, ctx.deps.challenge_name, flag)
+        display, is_confirmed = await do_submit_flag(
+            ctx.deps.platform_client, ctx.deps.challenge_name, flag
+        )
     if is_confirmed:
         ctx.deps.confirmed_flag = flag.strip()
     return display
