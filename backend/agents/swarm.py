@@ -6,11 +6,12 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from backend.agents.solver import Solver
 from backend.cost_tracker import CostTracker
-from backend.ctfd import CTFdClient
+from backend.deps import PlatformClient
 from backend.message_bus import ChallengeMessageBus
 from backend.models import DEFAULT_MODELS, provider_from_spec
 from backend.prompts import ChallengeMeta
@@ -49,12 +50,13 @@ class ChallengeSwarm:
 
     challenge_dir: str
     meta: ChallengeMeta
-    ctfd: CTFdClient
+    ctfd: PlatformClient
     cost_tracker: CostTracker
     settings: Settings
     model_specs: list[str] = field(default_factory=lambda: list(DEFAULT_MODELS))
     no_submit: bool = False
     coordinator_inbox: asyncio.Queue | None = None
+    log_bundle_dir: str | None = None
 
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
     solvers: dict[str, SolverProtocol] = field(default_factory=dict)
@@ -66,6 +68,13 @@ class ChallengeSwarm:
     _submitted_flags: set[str] = field(default_factory=set)  # dedup exact flags
     _last_submit_time: dict[str, float] = field(default_factory=dict)  # per-model last submit timestamp
     message_bus: ChallengeMessageBus = field(default_factory=ChallengeMessageBus)
+
+    def _trace_kwargs(self) -> dict:
+        trunc = int(getattr(self.settings, "log_truncate_bytes", 2000))
+        sd: str | None = None
+        if self.log_bundle_dir:
+            sd = str(Path(self.log_bundle_dir) / "swarm")
+        return {"swarm_trace_dir": sd, "log_truncate_bytes": trunc}
 
     def _create_solver(self, model_spec: str):
         """Create the right solver type based on provider.
@@ -79,6 +88,7 @@ class ChallengeSwarm:
         def _submit_fn(flag): return self.try_submit_flag(flag, model_spec)
         _notify = self._make_notify_fn(model_spec)
 
+        tk = self._trace_kwargs()
         if provider == "claude-sdk":
             from backend.agents.claude_solver import ClaudeSolver
             return ClaudeSolver(
@@ -93,6 +103,7 @@ class ChallengeSwarm:
                 submit_fn=_submit_fn,
                 message_bus=self.message_bus,
                 notify_coordinator=_notify,
+                **tk,
             )
 
         if provider == "codex":
@@ -109,6 +120,7 @@ class ChallengeSwarm:
                 submit_fn=_submit_fn,
                 message_bus=self.message_bus,
                 notify_coordinator=_notify,
+                **tk,
             )
 
         return self._create_pydantic_solver(model_spec)
@@ -134,6 +146,7 @@ class ChallengeSwarm:
             cancel_event=self.cancel_event,
             sandbox=sandbox,
             owns_sandbox=owns_sandbox,
+            **self._trace_kwargs(),
         )
         solver.deps.message_bus = self.message_bus
         solver.deps.model_spec = model_spec

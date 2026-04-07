@@ -122,6 +122,73 @@ class CTFdClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def _try_unlock_hint(self, hint_id: int) -> None:
+        """POST /unlocks for a free hint (ignores 400 already-unlocked)."""
+        await self._ensure_logged_in()
+        client = await self._ensure_client()
+        headers = dict(self._base_headers())
+        if not self.token:
+            headers["CSRF-Token"] = await self._get_csrf()
+        resp = await client.post(
+            "/api/v1/unlocks",
+            json={"target": hint_id, "type": "hints"},
+            headers=headers,
+        )
+        if resp.status_code not in (200, 400):
+            logger.warning("POST /unlocks for hint %s returned %s", hint_id, resp.status_code)
+
+    async def _fetch_hint_detail(self, hint_id: int) -> dict[str, Any] | None:
+        await self._ensure_logged_in()
+        client = await self._ensure_client()
+        resp = await client.get(
+            f"/api/v1/hints/{hint_id}",
+            headers=self._base_headers(),
+            follow_redirects=False,
+        )
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        if not data.get("success"):
+            return None
+        return data.get("data")
+
+    async def _hints_enriched_for_metadata(self, challenge: dict[str, Any]) -> list[dict[str, Any]]:
+        """Unlock free hints and GET full hint payloads (Eruditus-style)."""
+        raw_hints = challenge.get("hints") or []
+        if not raw_hints:
+            return []
+        from markdownify import markdownify as html2md
+
+        result: list[dict[str, Any]] = []
+        for hint in raw_hints:
+            hint_id = hint.get("id")
+            if hint_id is None:
+                continue
+            try:
+                hid = int(hint_id)
+            except (TypeError, ValueError):
+                continue
+            cost = int(hint.get("cost", 1) or 1)
+            content = hint.get("content")
+            if cost <= 0 and content is None:
+                await self._try_unlock_hint(hid)
+            detail = await self._fetch_hint_detail(hid)
+            merged = {**hint, **(detail or {})}
+            content = merged.get("content")
+            entry: dict[str, Any] = {"cost": hint.get("cost", 0)}
+            title = merged.get("title") or merged.get("name")
+            if title:
+                entry["title"] = str(title)
+            if content:
+                try:
+                    entry["content"] = html2md(
+                        str(content), heading_style="atx", escape_asterisks=False
+                    ).strip()
+                except Exception:
+                    entry["content"] = str(content)
+            result.append(entry)
+        return result
+
     async def fetch_challenge_stubs(self) -> list[dict[str, Any]]:
         """Fetch lightweight challenge list (no per-challenge detail fetch)."""
         data = await self._get("/challenges?per_page=500")
@@ -254,13 +321,7 @@ class CTFdClient:
             "tags": tags,
             "solves": challenge.get("solves", 0),
         }
-        # Add hints
-        hints = []
-        for h in challenge.get("hints") or []:
-            hint = {"cost": h.get("cost", 0)}
-            if h.get("content"):
-                hint["content"] = h["content"]
-            hints.append(hint)
+        hints = await self._hints_enriched_for_metadata(challenge)
         if hints:
             meta["hints"] = hints
 

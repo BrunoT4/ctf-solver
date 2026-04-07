@@ -8,8 +8,10 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from backend.cost_tracker import CostTracker
-from backend.ctfd import CTFdClient
+from backend.platforms.base import CompetitionPlatform
 from backend.sandbox import DockerSandbox
+
+PlatformClient = CompetitionPlatform
 
 if TYPE_CHECKING:
     from backend.message_bus import ChallengeMessageBus
@@ -21,7 +23,7 @@ SubmitFn = Callable[[str], Coroutine[Any, Any, tuple[str, bool]]]
 @dataclass
 class SolverDeps:
     sandbox: DockerSandbox
-    ctfd: CTFdClient
+    ctfd: PlatformClient
     challenge_dir: str
     challenge_name: str
     workspace_dir: str
@@ -37,7 +39,7 @@ class SolverDeps:
 
 @dataclass
 class CoordinatorDeps:
-    ctfd: CTFdClient
+    ctfd: PlatformClient
     cost_tracker: CostTracker
     settings: Any
     model_specs: list[str] = field(default_factory=list)
@@ -55,3 +57,4 @@ class CoordinatorDeps:
     results: dict[str, dict] = field(default_factory=dict)
     challenge_dirs: dict[str, str] = field(default_factory=dict)
     challenge_metas: dict[str, Any] = field(default_factory=dict)
+    log_run_id: str = ""

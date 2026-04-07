@@ -1,10 +1,10 @@
-"""Background CTFd poller — detects new and solved challenges every 5 seconds."""
+"""Background poller — detects new and solved challenges (CTFd or picoCTF)."""
 
 import asyncio
 import logging
 from dataclasses import dataclass, field
 
-from backend.ctfd import CTFdClient
+from backend.deps import PlatformClient
 
 logger = logging.getLogger(__name__)
 
@@ -17,10 +17,10 @@ class PollEvent:
 
 
 @dataclass
-class CTFdPoller:
-    """Polls CTFd every interval_s seconds, emits events for new/solved challenges."""
+class CompetitionPoller:
+    """Polls the competition API every interval_s seconds."""
 
-    ctfd: CTFdClient
+    client: PlatformClient
     interval_s: float = 5.0
 
     _known_challenges: set[str] = field(default_factory=set)
@@ -37,14 +37,14 @@ class CTFdPoller:
             len(self._known_challenges),
             len(self._known_solved),
         )
-        self._task = asyncio.create_task(self._loop(), name="ctfd-poller")
+        self._task = asyncio.create_task(self._loop(), name="competition-poller")
 
     async def _seed(self) -> None:
         """Initial fetch — just populate known state, no events."""
         try:
-            stubs = await self.ctfd.fetch_challenge_stubs()
+            stubs = await self.client.fetch_challenge_stubs()
             self._known_challenges = {ch["name"] for ch in stubs}
-            self._known_solved = await self.ctfd.fetch_solved_names()
+            self._known_solved = await self.client.fetch_solved_names()
         except Exception as e:
             logger.warning("Initial poll error: %s", e)
 
@@ -84,9 +84,9 @@ class CTFdPoller:
 
     async def _poll_once(self) -> None:
         try:
-            stubs = await self.ctfd.fetch_challenge_stubs()
+            stubs = await self.client.fetch_challenge_stubs()
             current_names = {ch["name"] for ch in stubs}
-            current_solved = await self.ctfd.fetch_solved_names()
+            current_solved = await self.client.fetch_solved_names()
 
             # Sanity check: if results look bogus compared to what we know, skip.
             if self._known_challenges and len(current_names) < len(self._known_challenges) // 2:
@@ -123,3 +123,7 @@ class CTFdPoller:
         while not self._stop.is_set():
             await asyncio.sleep(self.interval_s)
             await self._poll_once()
+
+
+# Backwards compatibility
+CTFdPoller = CompetitionPoller

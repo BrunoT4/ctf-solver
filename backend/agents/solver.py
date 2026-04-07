@@ -15,7 +15,7 @@ from pydantic_ai.toolsets.abstract import ToolsetTool
 from pydantic_ai.toolsets.wrapper import WrapperToolset
 
 from backend.cost_tracker import CostTracker
-from backend.ctfd import CTFdClient
+from backend.deps import PlatformClient
 from backend.deps import SolverDeps
 from backend.loop_detect import LOOP_WARNING_MESSAGE, LoopDetector
 from backend.models import (
@@ -111,12 +111,14 @@ class Solver:
         model_spec: str,
         challenge_dir: str,
         meta: ChallengeMeta,
-        ctfd: CTFdClient,
+        ctfd: PlatformClient,
         cost_tracker: CostTracker,
         settings: object,
         cancel_event: asyncio.Event | None = None,
         sandbox: DockerSandbox | None = None,
         owns_sandbox: bool | None = None,
+        swarm_trace_dir: str | None = None,
+        log_truncate_bytes: int | None = None,
     ) -> None:
         self.model_spec = model_spec
         self.model_id = model_id_from_spec(model_spec)
@@ -144,7 +146,15 @@ class Solver:
             cost_tracker=cost_tracker,
         )
         self.loop_detector = LoopDetector()
-        self.tracer = SolverTracer(meta.name, self.model_id)
+        lt = log_truncate_bytes if log_truncate_bytes is not None else int(
+            getattr(settings, "log_truncate_bytes", 2000)
+        )
+        self.tracer = SolverTracer(
+            meta.name,
+            self.model_id,
+            swarm_trace_dir=swarm_trace_dir,
+            log_truncate_bytes=lt,
+        )
         self.agent_name = f"{meta.name}/{self.model_id}"
         self._agent: Agent[SolverDeps, FlagFound] | None = None
         self._messages: list = []

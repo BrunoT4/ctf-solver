@@ -5,16 +5,17 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Any
 
 from backend.config import Settings
 from backend.cost_tracker import CostTracker
-from backend.ctfd import CTFdClient
-from backend.deps import CoordinatorDeps
+from backend.deps import CoordinatorDeps, PlatformClient
 from backend.models import DEFAULT_MODELS
-from backend.poller import CTFdPoller
+from backend.platforms import build_platform_client
+from backend.poller import CompetitionPoller
 from backend.prompts import ChallengeMeta
 
 logger = logging.getLogger(__name__)
@@ -30,20 +31,15 @@ def build_deps(
     no_submit: bool = False,
     challenge_dirs: dict[str, str] | None = None,
     challenge_metas: dict[str, ChallengeMeta] | None = None,
-) -> tuple[CTFdClient, CostTracker, CoordinatorDeps]:
-    """Create CTFd client, cost tracker, and coordinator deps."""
-    ctfd = CTFdClient(
-        base_url=settings.ctfd_url,
-        token=settings.ctfd_token,
-        username=settings.ctfd_user,
-        password=settings.ctfd_pass,
-    )
+) -> tuple[PlatformClient, CostTracker, CoordinatorDeps]:
+    """Create platform client, cost tracker, and coordinator deps."""
+    platform_client = build_platform_client(settings)
     cost_tracker = CostTracker()
     specs = model_specs or list(DEFAULT_MODELS)
     Path(challenges_root).mkdir(parents=True, exist_ok=True)
 
     deps = CoordinatorDeps(
-        ctfd=ctfd,
+        ctfd=platform_client,
         cost_tracker=cost_tracker,
         settings=settings,
         model_specs=specs,
@@ -52,6 +48,7 @@ def build_deps(
         max_concurrent_challenges=getattr(settings, "max_concurrent_challenges", 10),
         challenge_dirs=challenge_dirs or {},
         challenge_metas=challenge_metas or {},
+        log_run_id=uuid.uuid4().hex[:12],
     )
 
     # Pre-load already-pulled challenges
@@ -63,12 +60,12 @@ def build_deps(
                 deps.challenge_dirs[meta.name] = str(d)
                 deps.challenge_metas[meta.name] = meta
 
-    return ctfd, cost_tracker, deps
+    return platform_client, cost_tracker, deps
 
 
 async def run_event_loop(
     deps: CoordinatorDeps,
-    ctfd: CTFdClient,
+    platform_client: PlatformClient,
     cost_tracker: CostTracker,
     turn_fn: TurnFn,
     status_interval: int = 60,
@@ -77,12 +74,12 @@ async def run_event_loop(
 
     Args:
         deps: Coordinator dependencies (shared state).
-        ctfd: CTFd client (for poller).
+        platform_client: CTFd or picoCTF client (for poller).
         cost_tracker: Cost tracker.
         turn_fn: Async function that sends a message to the coordinator LLM.
         status_interval: Seconds between status updates.
     """
-    poller = CTFdPoller(ctfd=ctfd, interval_s=5.0)
+    poller = CompetitionPoller(client=platform_client, interval_s=5.0)
     await poller.start()
 
     # Start operator message HTTP endpoint
@@ -197,7 +194,7 @@ async def run_event_loop(
             await asyncio.gather(*deps.swarm_tasks.values(), return_exceptions=True)
         cost_tracker.log_summary()
         try:
-            await ctfd.close()
+            await platform_client.close()
         except Exception:
             pass
 

@@ -2,7 +2,7 @@
 name = "ctf-agent-two"
 version = "0.1.0"
 description = "CTF agent v2 — multi-model solver swarm"
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 dependencies = [
     "pydantic-ai[bedrock,openai,google]",
     "pydantic-settings",
@@ -20,6 +20,7 @@ dependencies = [
 [project.scripts]
 ctf-solve = "backend.cli:main"
 ctf-msg = "backend.cli:msg"
+ctf-pull = "backend.pull_challenges_cli:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -40,7 +41,7 @@ dev = [
 packages = ["backend"]
 
 [tool.ruff]
-target-version = "py314"
+target-version = "py312"
 line-length = 100
 
 [tool.ruff.lint]
@@ -54,4 +55,4 @@ known-first-party = ["backend"]
 unresolved-import = "ignore"
 
 [tool.ty.environment]
-python-version = "3.14"
+python-version = "3.12"

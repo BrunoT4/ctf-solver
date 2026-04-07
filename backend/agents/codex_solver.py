@@ -21,7 +21,7 @@ import time
 from typing import Any
 
 from backend.cost_tracker import CostTracker
-from backend.ctfd import CTFdClient
+from backend.deps import PlatformClient
 from backend.loop_detect import LoopDetector
 from backend.models import model_id_from_spec, supports_vision
 from backend.output_types import solver_output_json_schema
@@ -124,7 +124,7 @@ class CodexSolver:
         model_spec: str,
         challenge_dir: str,
         meta: ChallengeMeta,
-        ctfd: CTFdClient,
+        ctfd: PlatformClient,
         cost_tracker: CostTracker,
         settings: object,
         cancel_event: asyncio.Event | None = None,
@@ -132,6 +132,8 @@ class CodexSolver:
         submit_fn=None,
         message_bus=None,
         notify_coordinator=None,
+        swarm_trace_dir: str | None = None,
+        log_truncate_bytes: int | None = None,
     ) -> None:
         self.model_spec = model_spec
         self.model_id = model_id_from_spec(model_spec)
@@ -153,7 +155,15 @@ class CodexSolver:
         )
         self.use_vision = supports_vision(model_spec)
         self.loop_detector = LoopDetector()
-        self.tracer = SolverTracer(meta.name, self.model_id)
+        lt = log_truncate_bytes if log_truncate_bytes is not None else int(
+            getattr(settings, "log_truncate_bytes", 2000)
+        )
+        self.tracer = SolverTracer(
+            meta.name,
+            self.model_id,
+            swarm_trace_dir=swarm_trace_dir,
+            log_truncate_bytes=lt,
+        )
         self.agent_name = f"{meta.name}/{self.model_id}"
 
         self._proc: asyncio.subprocess.Process | None = None

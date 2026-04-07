@@ -76,6 +76,39 @@ uv run ctf-solve \
   -v
 ```
 
+### CTF platforms (`backend/platforms/`)
+
+Connectors live under [`backend/platforms/`](backend/platforms/): each package registers an id (e.g. `ctfd`, `picoctf`). Set `PLATFORM` in `.env` or pass `--platform <id>`. Run `ctf-solve --list-platforms` to see what is registered. Credentials are read from `.env` via `Settings` (see `.env.example`). **Adding a new site:** see [`backend/platforms/ADDING_A_PLATFORM.md`](backend/platforms/ADDING_A_PLATFORM.md).
+
+### picoCTF (session cookies)
+
+Use [picoCTF](https://picoctf.org/)’s HTTP API (`/api/v1/problems`, `/api/v1/submissions`) with cookies from your logged-in browser. Export cookies as JSON (flat `{"name":"value",...}` or a `[{"name","value"},...]` array), including the `token` cookie so `X-CSRF-Token` can be sent on flag submission.
+
+```bash
+uv run ctf-solve \
+  --platform picoctf \
+  --pico-cookies ./pico_cookies.json \
+  --challenges-dir challenges \
+  --max-challenges 5 \
+  -v
+```
+
+### Pull challenges to disk (`ctf-pull`)
+
+Bulk download uses the **same** platform connector as the solver (`PLATFORM` in `.env` or `--platform`). Configure credentials in `.env`, then:
+
+```bash
+uv run ctf-pull --output ./challenges
+uv run ctf-pull --platform ctfd --ctfd-url https://ctf.example.com --ctfd-token ctfd_...
+uv run ctf-pull --platform picoctf --pico-cookies ./pico_cookies.json --output ./challenges
+```
+
+`python pull_challenges.py` from the repo root is a thin wrapper after `pip install -e .` / `uv sync`.
+
+### Swarm logs and write-ups
+
+Each swarm writes a bundle under `logs/<run_id>/<challenge-slug>/`: `manifest.json` plus per-model JSONL traces in `swarm/`. After a run, if `WRITEUP_ENABLED` is true and `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` is set, an educational Markdown file is created under `write-ups/` from the logs and challenge description. Use `--log-truncate-bytes 0` for full trace payloads (large on disk). Use `--writeup-on-failure` for postmortems when no flag is recovered.
+
 ## Coordinator Backends
 
 ```bash
@@ -141,7 +174,7 @@ All settings can also be passed as environment variables or CLI flags.
 
 ## Requirements
 
-- Python 3.14+
+- Python 3.12+
 - Docker
 - API keys for at least one provider (Anthropic, OpenAI, Google)
 - `codex` CLI (for Codex solver/coordinator)
@@ -149,4 +182,8 @@ All settings can also be passed as environment variables or CLI flags.
 
 ## Acknowledgements
 
-- [es3n1n/Eruditus](https://github.com/es3n1n/Eruditus) — CTFd interaction and HTML helpers in `pull_challenges.py`
+- [es3n1n/Eruditus](https://github.com/es3n1n/Eruditus) — CTFd interaction patterns; free-hint unlock flow in [`backend/ctfd.py`](backend/ctfd.py) `pull_challenge`
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) — new CTF sites should add a package under [`backend/platforms/`](backend/platforms/) (detailed steps in [ADDING_A_PLATFORM.md](backend/platforms/ADDING_A_PLATFORM.md)).

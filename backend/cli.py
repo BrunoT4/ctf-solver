@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import sys
+import time
+import uuid
 from pathlib import Path
 
 import click
@@ -29,8 +32,26 @@ def _setup_logging(verbose: bool = False) -> None:
 
 
 @click.command()
+@click.option(
+    "--list-platforms",
+    is_flag=True,
+    help="Print registered CTF platform ids (from backend/platforms/) and exit",
+)
+@click.option(
+    "--platform",
+    default=None,
+    metavar="ID",
+    help="Platform id to use (default: PLATFORM from .env; see --list-platforms)",
+)
 @click.option("--ctfd-url", default=None, help="CTFd URL (overrides .env)")
 @click.option("--ctfd-token", default=None, help="CTFd API token (overrides .env)")
+@click.option("--pico-base-url", default=None, help="picoCTF site URL (default play.picoctf.org)")
+@click.option("--pico-cookies", default=None, help="Path to JSON cookie export for picoCTF")
+@click.option("--log-base", default=None, help="Root directory for swarm logs")
+@click.option("--log-truncate-bytes", default=None, type=int, help="0 = no truncation in JSONL traces")
+@click.option("--no-writeup", is_flag=True, help="Disable Markdown write-up generation")
+@click.option("--writeup-on-failure", is_flag=True, help="Generate write-ups when the swarm did not get the flag")
+@click.option("--writeup-force", is_flag=True, help="Overwrite existing write-ups")
 @click.option("--image", default="ctf-sandbox", help="Docker sandbox image name")
 @click.option("--models", multiple=True, help="Model specs (default: all configured)")
 @click.option("--challenge", default=None, help="Solve a single challenge directory")
@@ -42,8 +63,17 @@ def _setup_logging(verbose: bool = False) -> None:
 @click.option("--msg-port", default=0, type=int, help="Operator message port (0 = auto)")
 @click.option("-v", "--verbose", is_flag=True, help="Verbose logging")
 def main(
+    list_platforms: bool,
+    platform: str | None,
     ctfd_url: str | None,
     ctfd_token: str | None,
+    pico_base_url: str | None,
+    pico_cookies: str | None,
+    log_base: str | None,
+    log_truncate_bytes: int | None,
+    no_writeup: bool,
+    writeup_on_failure: bool,
+    writeup_force: bool,
     image: str,
     models: tuple[str, ...],
     challenge: str | None,
@@ -61,17 +91,55 @@ def main(
     """
     _setup_logging(verbose)
 
+    if list_platforms:
+        from backend.platforms import list_registered_platforms
+
+        for pid in list_registered_platforms():
+            console.print(pid)
+        sys.exit(0)
+
     settings = Settings(sandbox_image=image)
+    if platform:
+        settings.platform = platform
     if ctfd_url:
         settings.ctfd_url = ctfd_url
     if ctfd_token:
         settings.ctfd_token = ctfd_token
+    if pico_base_url:
+        settings.pico_base_url = pico_base_url
+    if pico_cookies:
+        settings.pico_cookies_file = pico_cookies
+    if log_base:
+        settings.log_base = log_base
+    if log_truncate_bytes is not None:
+        settings.log_truncate_bytes = log_truncate_bytes
+    if no_writeup:
+        settings.writeup_enabled = False
+    if writeup_on_failure:
+        settings.writeup_on_failure = True
+    if writeup_force:
+        settings.writeup_force = True
     settings.max_concurrent_challenges = max_challenges
+
+    from backend.platforms import list_registered_platforms
+
+    pid = settings.platform.strip().lower()
+    registered = list_registered_platforms()
+    if pid not in registered:
+        console.print(
+            f"[red]Unknown platform '{settings.platform}'. "
+            f"Registered ids: {', '.join(registered)}. Use --list-platforms.[/red]"
+        )
+        sys.exit(1)
 
     model_specs = list(models) if models else list(DEFAULT_MODELS)
 
     console.print("[bold]CTF Agent v2[/bold]")
-    console.print(f"  CTFd: {settings.ctfd_url}")
+    console.print(f"  Platform: {settings.platform}")
+    if pid == "picoctf":
+        console.print(f"  picoCTF: {settings.pico_base_url}")
+    elif pid == "ctfd":
+        console.print(f"  CTFd: {settings.ctfd_url}")
     console.print(f"  Models: {', '.join(model_specs)}")
     console.print(f"  Image: {settings.sandbox_image}")
     console.print(f"  Max challenges: {max_challenges}")
@@ -80,7 +148,18 @@ def main(
     if challenge:
         asyncio.run(_run_single(settings, challenge, model_specs, no_submit, max_challenges))
     else:
-        asyncio.run(_run_coordinator(settings, model_specs, challenges_dir, no_submit, coordinator_model, coordinator, max_challenges, msg_port))
+        asyncio.run(
+            _run_coordinator(
+                settings,
+                model_specs,
+                challenges_dir,
+                no_submit,
+                coordinator_model,
+                coordinator,
+                max_challenges,
+                msg_port,
+            )
+        )
 
 
 async def _run_single(
@@ -91,11 +170,13 @@ async def _run_single(
     max_challenges: int,
 ) -> None:
     """Run a single challenge with a swarm."""
+    from backend.agents.coordinator_core import finalize_swarm_log_bundle, _safe_challenge_slug
+    from backend.platforms import build_platform_client
     from backend.agents.swarm import ChallengeSwarm
     from backend.cost_tracker import CostTracker
-    from backend.ctfd import CTFdClient
     from backend.prompts import ChallengeMeta
     from backend.sandbox import cleanup_orphan_containers, configure_semaphore
+    from backend.solver_base import FLAG_FOUND
 
     max_containers = max_challenges * len(model_specs)
     configure_semaphore(max_containers)
@@ -110,38 +191,64 @@ async def _run_single(
     meta = ChallengeMeta.from_yaml(meta_path)
     console.print(f"[bold]Challenge:[/bold] {meta.name} ({meta.category}, {meta.value} pts)")
 
-    ctfd = CTFdClient(
-        base_url=settings.ctfd_url,
-        token=settings.ctfd_token,
-        username=settings.ctfd_user,
-        password=settings.ctfd_pass,
-    )
+    if not (settings.log_run_id or "").strip():
+        settings.log_run_id = uuid.uuid4().hex[:12]
+
+    platform_client = build_platform_client(settings)
     cost_tracker = CostTracker()
+
+    slug = _safe_challenge_slug(meta.name)
+    bundle = Path(settings.log_base) / settings.log_run_id / slug
+    bundle.mkdir(parents=True, exist_ok=True)
+    (bundle / "swarm").mkdir(exist_ok=True)
+    manifest_path = bundle / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "run_id": settings.log_run_id,
+                "challenge_name": meta.name,
+                "challenge_slug": slug,
+                "platform": settings.platform,
+                "started_ts": time.time(),
+                "models": list(model_specs),
+                "outcome": "running",
+                "flag": None,
+                "log_bundle_dir": str(bundle.resolve()),
+                "mode": "single_challenge",
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
     swarm = ChallengeSwarm(
         challenge_dir=str(challenge_path),
         meta=meta,
-        ctfd=ctfd,
+        ctfd=platform_client,
         cost_tracker=cost_tracker,
         settings=settings,
         model_specs=model_specs,
         no_submit=no_submit,
+        log_bundle_dir=str(bundle.resolve()),
     )
 
     try:
         result = await swarm.run()
-        from backend.solver_base import FLAG_FOUND
+        await finalize_swarm_log_bundle(
+            manifest_path, settings, meta, result, no_submit=no_submit
+        )
         if result and result.status == FLAG_FOUND:
             console.print(f"\n[bold green]FLAG FOUND:[/bold green] {result.flag}")
         else:
             console.print("\n[bold red]No flag found.[/bold red]")
 
+        console.print(f"\n[dim]Logs: {bundle}[/dim]")
         console.print("\n[bold]Cost Summary:[/bold]")
         for agent_name in cost_tracker.by_agent:
             console.print(f"  {agent_name}: {cost_tracker.format_usage(agent_name)}")
         console.print(f"  [bold]Total: ${cost_tracker.total_cost_usd:.2f}[/bold]")
     finally:
-        await ctfd.close()
+        await platform_client.close()
 
 
 async def _run_coordinator(

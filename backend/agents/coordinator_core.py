@@ -5,13 +5,58 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
+import time
 from pathlib import Path
 
 from backend.deps import CoordinatorDeps
 from backend.prompts import ChallengeMeta
-from backend.solver_base import FLAG_FOUND
+from backend.solver_base import FLAG_FOUND, SolverResult
 
 logger = logging.getLogger(__name__)
+
+
+async def finalize_swarm_log_bundle(
+    manifest_path: Path,
+    settings: object,
+    meta: ChallengeMeta,
+    result: SolverResult | None,
+    *,
+    no_submit: bool = False,
+) -> None:
+    """Update manifest.json and optionally generate a Markdown write-up."""
+    solved = bool(result and result.status == FLAG_FOUND)
+    flag_val = result.flag if result else None
+    ended = time.time()
+    try:
+        mf = json.loads(manifest_path.read_text(encoding="utf-8"))
+        mf["ended_ts"] = ended
+        mf["outcome"] = "solved" if solved else "finished"
+        mf["flag"] = flag_val
+        mf["no_submit"] = no_submit
+        manifest_path.write_text(json.dumps(mf, indent=2), encoding="utf-8")
+    except Exception:
+        logger.warning("Could not update manifest %s", manifest_path, exc_info=True)
+    if getattr(settings, "writeup_enabled", True):
+        try:
+            from backend.writeup import maybe_generate_writeup
+
+            await maybe_generate_writeup(
+                manifest_path=manifest_path,
+                settings=settings,
+                challenge_description=meta.description or "",
+                solved=solved,
+                flag=flag_val,
+            )
+        except Exception:
+            logger.warning("Write-up failed for %s", manifest_path, exc_info=True)
+
+
+def _safe_challenge_slug(name: str) -> str:
+    s = re.sub(r'[<>:"/\\|?*.\x00-\x1f]', "", name.lower().strip())
+    s = re.sub(r"[\s_]+", "-", s)
+    s = re.sub(r"-+", "-", s).strip("-") or "challenge"
+    return s
 
 
 async def do_fetch_challenges(deps: CoordinatorDeps) -> str:
@@ -68,6 +113,27 @@ async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
 
     from backend.agents.swarm import ChallengeSwarm
 
+    settings = deps.settings
+    log_base = getattr(settings, "log_base", "logs")
+    run_id = (deps.log_run_id or getattr(settings, "log_run_id", "") or "default").strip()
+    slug = _safe_challenge_slug(challenge_name)
+    bundle = Path(log_base) / run_id / slug
+    bundle.mkdir(parents=True, exist_ok=True)
+    (bundle / "swarm").mkdir(exist_ok=True)
+    manifest_path = bundle / "manifest.json"
+    manifest = {
+        "run_id": run_id,
+        "challenge_name": challenge_name,
+        "challenge_slug": slug,
+        "platform": getattr(settings, "platform", "ctfd"),
+        "started_ts": time.time(),
+        "models": list(deps.model_specs),
+        "outcome": "running",
+        "flag": None,
+        "log_bundle_dir": str(bundle.resolve()),
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
     swarm = ChallengeSwarm(
         challenge_dir=deps.challenge_dirs[challenge_name],
         meta=deps.challenge_metas[challenge_name],
@@ -77,12 +143,16 @@ async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
         model_specs=deps.model_specs,
         no_submit=deps.no_submit,
         coordinator_inbox=deps.coordinator_inbox,
+        log_bundle_dir=str(bundle.resolve()),
     )
     deps.swarms[challenge_name] = swarm
 
     async def _run_and_cleanup() -> None:
         result = await swarm.run()
-        # Flag already submitted/confirmed by solver's submit_fn — just record the result
+        meta = deps.challenge_metas[challenge_name]
+        await finalize_swarm_log_bundle(
+            manifest_path, settings, meta, result, no_submit=deps.no_submit
+        )
         if result and result.status == FLAG_FOUND:
             deps.results[challenge_name] = {
                 "flag": result.flag,
