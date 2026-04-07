@@ -1,16 +1,16 @@
-# CTF Agent
+# ctf-solver
 
-Autonomous CTF (Capture The Flag) solver that races multiple AI models against challenges in parallel. Built in a weekend, we used it to solve all 52/52 challenges and win **1st place at BSidesSF 2026 CTF**.
+This repository **builds on** [**verialabs/ctf-agent**](https://github.com/verialabs/ctf-agent) (MIT), the autonomous Capture The Flag solver from [Veria Labs](https://verialabs.com) that runs a coordinator plus parallel model “swarms” against challenges in Docker. The upstream project [documented a full clear](https://github.com/verialabs/ctf-agent) at BSidesSF 2026 (52/52) and supports categories such as pwn, rev, crypto, forensics, web, and misc. **We are not Veria Labs**; this is an independent fork that keeps their architecture and extends it.
 
-Built by [Veria Labs](https://verialabs.com), founded by members of [.;,;.](https://ctftime.org/team/222911) (smiley), the [#1 US CTF team on CTFTime in 2024 and 2025](https://ctftime.org/stats/2024/US). We build AI agents that find and exploit real security vulnerabilities for large enterprises.
+**What this fork adds**
 
-## Results
+- **Pluggable CTF platforms** — connectors live under [`backend/platforms/`](backend/platforms/); set `PLATFORM` in `.env` or use `--platform`. Today: **CTFd** and **picoCTF**; [adding a site](backend/platforms/ADDING_A_PLATFORM.md) means a new package + registry entry.
+- **picoCTF** — session-cookie auth and API integration alongside existing CTFd support.
+- **Swarm logs** — per-run directories under `logs/` with `manifest.json` and JSONL traces per model.
+- **Write-ups** — optional educational Markdown under `write-ups/`, generated from logs + challenge text (when API keys are configured).
+- **`ctf-pull`** — bulk download of challenges to disk using the **same** connector as `ctf-solve` (no separate CTFd-only script path).
 
-| Competition | Challenges Solved | Result |
-|-------------|:-:|--------|
-| **BSidesSF 2026** | 52/52 (100%) | **1st place ($1,500)** |
-
-The agent solves challenges across all categories — pwn, rev, crypto, forensics, web, and misc.
+Upstream changes can be merged from `https://github.com/verialabs/ctf-agent.git` (this repo uses it as **`git remote upstream`** when configured that way).
 
 ## How It Works
 
@@ -18,7 +18,7 @@ A **coordinator** LLM manages the competition while **solver swarms** attack ind
 
 ```
                         +-----------------+
-                        |  CTFd Platform  |
+                        |  CTF platform   |
                         +--------+--------+
                                  |
                         +--------v--------+
