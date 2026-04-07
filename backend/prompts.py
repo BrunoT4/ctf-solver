@@ -150,11 +150,16 @@ def build_prompt(
     if has_named_tools:
         image_hint = "**Images: call `view_image` FIRST, before any other analysis.**"
         web_hint = "Web: fuzz params, check JS source, cookies, robots.txt. For XSS/SSRF: use `webhook_create`."
-        submit_hint = "**Verify every candidate with `submit_flag`** before reporting."
+        submit_hint = (
+            "**Submit:** one Bash line `submit_flag '...'` (no `bash -c` wrapper — intercepted before Docker)."
+        )
     else:
         image_hint = "**Images: use `exiftool`, `steghide`, `zsteg`, `strings`, `xxd` via bash.**"
         web_hint = "Web: fuzz params, check JS source, cookies, robots.txt. For XSS/SSRF: use `curl` to webhook.site."
-        submit_hint = "**Verify every candidate with `submit_flag '<flag>'`** (bash command) before reporting."
+        submit_hint = (
+            "**Submit with exactly one Bash line:** `submit_flag 'picoCTF{...}'` "
+            "(do not wrap in `bash -c` — `submit_flag` is not a program inside the container)."
+        )
 
     lines += [
         "",

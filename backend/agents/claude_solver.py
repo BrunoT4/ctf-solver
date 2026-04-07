@@ -3,7 +3,8 @@
 Uses Claude's native Bash tool, but intercepts every command via a PreToolUse
 hook and rewrites it to run inside the Docker sandbox via `docker exec`. Read,
 Write, and Edit are blocked — the model uses bash for all file operations.
-Flag submission is intercepted from bash commands matching `submit_flag <flag>`.
+Flag submission is intercepted from Bash tool input that contains `submit_flag`
+(including inside `bash -c 'submit_flag ...'` — the container has no submit_flag binary).
 """
 
 from __future__ import annotations
@@ -35,6 +36,30 @@ from backend.solver_base import CANCELLED, ERROR, FLAG_FOUND, GAVE_UP, QUOTA_ERR
 from backend.tracing import SolverTracer
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_submit_flag_value(command: str) -> str | None:
+    """Find a flag argument to submit_flag anywhere in the Bash command string.
+
+    Models often wrap submission as ``/bin/bash -c 'submit_flag "picoCTF{...}"'``;
+    a start-anchored regex misses that, so the command runs only inside Docker and fails.
+    """
+    cmd = command.strip()
+    if not cmd or "submit_flag" not in cmd:
+        return None
+    m = re.search(r"submit_flag\s+'([^']+)'", cmd)
+    if m:
+        return m.group(1).strip()
+    m = re.search(r'submit_flag\s+"([^"]+)"', cmd)
+    if m:
+        return m.group(1).strip()
+    m = re.search(r"submit_flag\s+(picoCTF\{[^}]+\})", cmd)
+    if m:
+        return m.group(1).strip()
+    m = re.search(r"submit_flag\s+(\S+)", cmd)
+    if m:
+        return m.group(1).strip()
+    return None
 
 
 class ClaudeSolver:
@@ -155,10 +180,9 @@ class ClaudeSolver:
             if tool_name == "Bash":
                 command = tool_input.get("command", "")
 
-                # Intercept submit_flag commands — handle submission directly
-                flag_match = re.match(r"submit_flag\s+['\"]?(.+?)['\"]?\s*$", command.strip())
-                if flag_match:
-                    flag_val = flag_match.group(1).strip()
+                # Intercept submit_flag — host-side submit (not in container; no binary there)
+                flag_val = _extract_submit_flag_value(command)
+                if flag_val:
                     if self.no_submit:
                         result_msg = f'DRY RUN — would submit "{flag_val}"'
                     else:
