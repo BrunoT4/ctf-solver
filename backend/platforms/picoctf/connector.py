@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -197,6 +198,162 @@ class PicoCTFClient:
         merged["solves"] = merged.get("users_solved", 0)
         merged["solved"] = bool(merged.get("solved_by_user"))
         return merged
+
+    async def provision_fresh_instance(self, summary: dict[str, Any]) -> dict[str, Any]:
+        """Tear down any existing instance, start a new one, poll until endpoints exist.
+
+        Mirrors the web UI \"Start instance\" flow so ``connection_info`` / description
+        are populated for challenges backed by CMGR-style instances. Static challenges
+        return 404/405 on POST; we skip waiting and merge from GET only.
+        """
+        merged_base = dict(summary)
+        cid = merged_base.get("id")
+        if cid is None:
+            return await self._merge_with_instance(merged_base)
+        try:
+            cid_int = int(cid)
+        except (TypeError, ValueError):
+            return await self._merge_with_instance(merged_base)
+
+        client = await self._ensure_client()
+        del_resp = await client.delete(
+            f"/api/challenges/{cid_int}/instance/",
+            headers=self._csrf_headers(),
+        )
+        if del_resp.status_code not in (200, 204, 404, 405):
+            logger.debug(
+                "picoCTF instance DELETE ch=%s -> %s",
+                cid_int,
+                del_resp.status_code,
+            )
+
+        post_resp = await client.post(
+            f"/api/challenges/{cid_int}/instance/",
+            json={},
+            headers=self._csrf_headers(),
+        )
+        poll: bool
+        if post_resp.status_code in (200, 201, 202, 204):
+            poll = True
+        elif post_resp.status_code == 400:
+            logger.info(
+                "picoCTF instance POST 400 for ch=%s: %s",
+                cid_int,
+                (post_resp.text or "")[:400],
+            )
+            poll = True
+        elif post_resp.status_code in (404, 405):
+            logger.debug(
+                "picoCTF ch=%s: no instance POST (%s); static or unsupported",
+                cid_int,
+                post_resp.status_code,
+            )
+            poll = False
+        else:
+            logger.warning(
+                "picoCTF instance POST ch=%s -> %s %s",
+                cid_int,
+                post_resp.status_code,
+                (post_resp.text or "")[:400],
+            )
+            poll = post_resp.status_code not in (401, 403)
+
+        if not poll:
+            return await self._merge_with_instance(merged_base)
+
+        for i in range(60):
+            merged = await self._merge_with_instance(merged_base)
+            if (merged.get("connection_info") or "").strip():
+                if i:
+                    logger.info(
+                        "picoCTF instance ready for ch=%s after ~%ds",
+                        cid_int,
+                        i * 2,
+                    )
+                return merged
+            try:
+                raw = await self._get_json(f"/api/challenges/{cid_int}/instance/")
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 404:
+                    break
+                raise
+            if isinstance(raw, dict):
+                st = str(raw.get("status") or raw.get("state") or "").lower()
+                err = raw.get("error") or raw.get("detail")
+                if err and st in ("error", "failed"):
+                    logger.warning("picoCTF instance failed ch=%s: %s", cid_int, err)
+                    break
+            await asyncio.sleep(2)
+
+        return await self._merge_with_instance(merged_base)
+
+    async def provision_fresh_instance_for_challenge_name(
+        self, challenge_name: str
+    ) -> dict[str, Any] | None:
+        """Look up challenge by API name and provision; ``None`` if not listed."""
+        summaries = await self._iter_challenge_list_pages()
+        p = next((s for s in summaries if str(s.get("name", "")) == challenge_name), None)
+        if not p:
+            logger.warning('picoCTF: challenge "%s" not found in /api/challenges', challenge_name)
+            return None
+        return await self.provision_fresh_instance(p)
+
+    def patch_local_metadata_from_merged_challenge(
+        self, challenge_dir: str | Path, merged: dict[str, Any]
+    ) -> None:
+        """Update ``metadata.yml`` with API fields (description, connection_info, hints)."""
+        import yaml
+        from markdownify import markdownify as html2md
+
+        ch_dir = Path(challenge_dir)
+        meta_path = ch_dir / "metadata.yml"
+        if not meta_path.is_file():
+            logger.warning("picoCTF: no metadata.yml to patch under %s", ch_dir)
+            return
+        try:
+            data: dict[str, Any] = yaml.safe_load(meta_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            data = {}
+
+        desc = merged.get("description") or ""
+        if desc:
+            try:
+                desc_md = html2md(str(desc), heading_style="atx", escape_asterisks=False)
+            except Exception:
+                desc_md = str(desc)
+            if desc_md.strip():
+                data["description"] = desc_md.strip()
+
+        conn = merged.get("connection_info") or ""
+        if isinstance(conn, str) and conn.strip():
+            data["connection_info"] = conn.strip()
+
+        hints_raw = merged.get("hints") or []
+        hints: list[dict[str, Any]] = []
+        for h in hints_raw:
+            if isinstance(h, dict):
+                entry: dict[str, Any] = {}
+                if "hint" in h:
+                    entry["content"] = h["hint"]
+                elif "content" in h:
+                    entry["content"] = h["content"]
+                if "cost" in h:
+                    entry["cost"] = h["cost"]
+                if entry:
+                    hints.append(entry)
+            elif isinstance(h, str):
+                hints.append({"content": h})
+        if hints:
+            data["hints"] = hints
+
+        for key in ("value", "solves"):
+            if key in merged and merged[key] is not None:
+                data[key] = merged[key]
+
+        meta_path.write_text(
+            yaml.dump(data, allow_unicode=True, default_flow_style=False, sort_keys=False),
+            encoding="utf-8",
+        )
 
     async def fetch_challenge_stubs(self) -> list[dict[str, Any]]:
         summaries = await self._iter_challenge_list_pages()

@@ -234,6 +234,7 @@ async def _run_single(
 
     try:
         result = await swarm.run()
+        meta = ChallengeMeta.from_yaml(meta_path)
         await finalize_swarm_log_bundle(
             manifest_path, settings, meta, result, no_submit=no_submit
         )

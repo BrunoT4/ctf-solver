@@ -106,6 +106,9 @@ async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
         ch_data = next((c for c in challenges if c.get("name") == challenge_name), None)
         if not ch_data:
             return f"Challenge '{challenge_name}' not found on CTFd"
+        prov = getattr(deps.ctfd, "provision_fresh_instance", None)
+        if prov:
+            ch_data = await prov(ch_data)
         output_dir = str(Path(deps.challenges_root))
         ch_dir = await deps.ctfd.pull_challenge(ch_data, output_dir)
         deps.challenge_dirs[challenge_name] = ch_dir
@@ -149,7 +152,8 @@ async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
 
     async def _run_and_cleanup() -> None:
         result = await swarm.run()
-        meta = deps.challenge_metas[challenge_name]
+        meta = ChallengeMeta.from_yaml(Path(deps.challenge_dirs[challenge_name]) / "metadata.yml")
+        deps.challenge_metas[challenge_name] = meta
         await finalize_swarm_log_bundle(
             manifest_path, settings, meta, result, no_submit=deps.no_submit
         )

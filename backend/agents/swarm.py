@@ -346,8 +346,36 @@ class ChallengeSwarm:
 
         return result, solver
 
+    async def refresh_platform_metadata(self) -> None:
+        """picoCTF: start a fresh instance and sync ``metadata.yml`` before solving."""
+        prov = getattr(self.ctfd, "provision_fresh_instance_for_challenge_name", None)
+        patch = getattr(self.ctfd, "patch_local_metadata_from_merged_challenge", None)
+        if prov is None or patch is None:
+            return
+        try:
+            merged = await prov(self.meta.name)
+        except Exception:
+            logger.warning(
+                "[%s] Could not provision platform instance",
+                self.meta.name,
+                exc_info=True,
+            )
+            return
+        if not merged:
+            return
+        try:
+            patch(self.challenge_dir, merged)
+            self.meta = ChallengeMeta.from_yaml(Path(self.challenge_dir) / "metadata.yml")
+            logger.info(
+                "[%s] Synced metadata from platform (fresh instance / connection info)",
+                self.meta.name,
+            )
+        except Exception:
+            logger.warning("[%s] Failed to patch metadata.yml", self.meta.name, exc_info=True)
+
     async def run(self) -> SolverResult | None:
         """Run all solvers in parallel. Returns the winner's result or None."""
+        await self.refresh_platform_metadata()
         tasks = [
             asyncio.create_task(self._run_solver(spec), name=f"solver-{spec}")
             for spec in self.model_specs

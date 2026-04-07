@@ -72,6 +72,11 @@ def build_prompt(
     lines: list[str] = [
         "You are an expert CTF solver. Find the real flag for the challenge below.",
         "",
+        "**Ground truth:** Use only what appears in this prompt, `/challenge/` files, and **output "
+        "from your own commands** in this run. Do **not** paste flags, hostnames, ports, or walkthrough "
+        "steps recalled from training data or old writeups — on picoCTF, values are often **unique per "
+        "instance**, so memorized answers will fail submission.",
+        "",
     ]
 
     if conn_info:
@@ -178,9 +183,11 @@ def build_prompt(
         ),
         "   - Pwn: `stty raw -echo` before launching vulnerable binaries over nc.",
         '4. **Ignore placeholder flags** — `CTF{flag}`, `CTF{placeholder}` are not real flags.',
-        f"5. {submit_hint}",
-        "6. Once CORRECT: output `FLAG: <value>` on its own line.",
-        "7. Do not guess. Do not ask. Cover maximum surface area.",
+        "5. **No memorized picoCTF strings** — if you think you \"know\" a flag from elsewhere, "
+        "**ignore it** until the same string appears in your tool output for **this** run.",
+        f"6. {submit_hint}",
+        "7. Once CORRECT: output `FLAG: <value>` on its own line.",
+        "8. Do not guess. Do not ask. Cover maximum surface area.",
     ]
 
     return "\n".join(lines)
