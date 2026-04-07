@@ -23,7 +23,7 @@ from typing import Any
 from backend.cost_tracker import CostTracker
 from backend.deps import PlatformClient
 from backend.loop_detect import LoopDetector
-from backend.models import model_id_from_spec, supports_vision
+from backend.model_specs import model_id_from_spec, supports_vision
 from backend.output_types import solver_output_json_schema
 from backend.prompts import ChallengeMeta, build_prompt, list_distfiles
 from backend.sandbox import DockerSandbox

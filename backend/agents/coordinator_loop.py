@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
 from collections.abc import Callable, Coroutine
 from pathlib import Path
@@ -13,7 +14,7 @@ from typing import Any
 from backend.config import Settings
 from backend.cost_tracker import CostTracker
 from backend.deps import CoordinatorDeps, PlatformClient
-from backend.models import DEFAULT_MODELS
+from backend.model_specs import DEFAULT_MODELS
 from backend.platforms import build_platform_client
 from backend.poller import CompetitionPoller
 from backend.prompts import ChallengeMeta
@@ -33,7 +34,9 @@ def build_deps(
     challenge_metas: dict[str, ChallengeMeta] | None = None,
 ) -> tuple[PlatformClient, CostTracker, CoordinatorDeps]:
     """Create platform client, cost tracker, and coordinator deps."""
+    t_plat = time.perf_counter()
     platform_client = build_platform_client(settings)
+    logger.info("build_deps: platform client in %.2fs", time.perf_counter() - t_plat)
     cost_tracker = CostTracker()
     specs = model_specs or list(DEFAULT_MODELS)
     Path(challenges_root).mkdir(parents=True, exist_ok=True)
@@ -52,13 +55,23 @@ def build_deps(
     )
 
     # Pre-load already-pulled challenges
+    t_scan = time.perf_counter()
+    yaml_dirs = 0
     for d in Path(challenges_root).iterdir():
         meta_path = d / "metadata.yml"
         if meta_path.exists():
+            yaml_dirs += 1
             meta = ChallengeMeta.from_yaml(meta_path)
             if meta.name not in deps.challenge_dirs:
                 deps.challenge_dirs[meta.name] = str(d)
                 deps.challenge_metas[meta.name] = meta
+    logger.info(
+        "build_deps: scanned %d metadata.yml under %r, %d indexed challenges (%.2fs)",
+        yaml_dirs,
+        challenges_root,
+        len(deps.challenge_dirs),
+        time.perf_counter() - t_scan,
+    )
 
     return platform_client, cost_tracker, deps
 

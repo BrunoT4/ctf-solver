@@ -1,0 +1,12 @@
+# Solver tool image used by ctf-solve (aiodocker creates containers from it).
+# Build:   docker compose build
+# Rebuild: docker compose build --no-cache
+# Do not `docker compose up` for normal use — the coordinator starts ephemeral
+# sandbox containers itself. This file is only for building/tagging ctf-sandbox.
+
+services:
+  ctf-sandbox:
+    build:
+      context: .
+      dockerfile: sandbox/Dockerfile.sandbox
+    image: ctf-sandbox:latest

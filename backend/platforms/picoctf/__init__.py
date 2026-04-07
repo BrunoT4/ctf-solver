@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from backend.platforms.picoctf.connector import PicoCTFClient
@@ -20,9 +21,14 @@ def create_client(settings: Settings) -> PicoCTFClient:
             "platform=picoctf requires PICO_COOKIES_FILE in .env or --pico-cookies "
             "(path to JSON cookie export including session and token)."
         )
+    p = Path(path).expanduser()
+    if not p.is_file():
+        raise RuntimeError(
+            f"picoCTF cookie file not found (set PICO_COOKIES_FILE or --pico-cookies): {p}"
+        )
     return PicoCTFClient(
         base_url=settings.pico_base_url.rstrip("/"),
-        cookies_path=path,
+        cookies_path=str(p.resolve()),
     )
 
 

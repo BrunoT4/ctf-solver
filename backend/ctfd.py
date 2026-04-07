@@ -227,14 +227,19 @@ class CTFdClient:
             )
         return SubmitResult("unknown", message, f"Unknown status: {status}")
 
-    async def fetch_all_challenges(self) -> list[dict[str, Any]]:
+    async def fetch_all_challenges(
+        self, only_names: frozenset[str] | None = None
+    ) -> list[dict[str, Any]]:
         data = await self._get("/challenges?per_page=500")
         challenges = []
         for stub in data.get("data", []):
             if stub.get("type") == "hidden":
                 continue
             detail = await self._get(f"/challenges/{stub['id']}")
-            challenges.append(detail["data"])
+            row = detail["data"]
+            if only_names and row.get("name") not in only_names:
+                continue
+            challenges.append(row)
         return challenges
 
     async def fetch_solved_names(self) -> set[str]:

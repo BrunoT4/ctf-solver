@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     pico_base_url: str = "https://play.picoctf.org"
     pico_cookies_file: str = ""
 
+    # Optional: path to `claude` if you authenticated a non-bundled install (see claude_code_env.py).
+    claude_code_cli_path: str = ""
+
     # API Keys
     anthropic_api_key: str = ""
     openai_api_key: str = ""

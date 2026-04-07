@@ -1,54 +1,53 @@
-"""Model resolution — Bedrock, Azure OpenAI, Zen, Google AI Studio."""
+"""Model resolution — Bedrock, Azure OpenAI, Zen, Google AI Studio.
+
+Heavy imports (boto3, pydantic_ai providers) are lazy-loaded inside
+``resolve_model`` / ``resolve_model_settings`` so CLI and Claude-only paths
+start quickly.
+"""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-import boto3
-from pydantic_ai.models import Model
-from pydantic_ai.models.bedrock import BedrockConverseModel, BedrockModelSettings
-from pydantic_ai.models.google import GoogleModel, GoogleModelSettings
-from pydantic_ai.models.openai import OpenAIModel, OpenAIModelSettings
-from pydantic_ai.providers.bedrock import BedrockProvider
-from pydantic_ai.providers.google import GoogleProvider
-from pydantic_ai.providers.openai import OpenAIProvider
-from pydantic_ai.settings import ModelSettings
+from backend.model_specs import (
+    CONTEXT_WINDOWS,
+    DEFAULT_MODELS,
+    VISION_MODELS,
+    context_window,
+    effort_from_spec,
+    model_id_from_spec,
+    provider_from_spec,
+    supports_vision,
+)
 
 if TYPE_CHECKING:
     from backend.config import Settings
 
-# Default model specs — claude-sdk and codex providers use the new solver backends
-DEFAULT_MODELS: list[str] = [
-    "claude-sdk/claude-opus-4-6/medium",
-    "claude-sdk/claude-opus-4-6/max",
-    "codex/gpt-5.4",
-    "codex/gpt-5.4-mini",
-    "codex/gpt-5.3-codex",
+__all__ = [
+    "CONTEXT_WINDOWS",
+    "DEFAULT_MODELS",
+    "VISION_MODELS",
+    "context_window",
+    "effort_from_spec",
+    "model_id_from_spec",
+    "provider_from_spec",
+    "resolve_model",
+    "resolve_model_settings",
+    "supports_vision",
 ]
 
-# Context window sizes (tokens)
-CONTEXT_WINDOWS: dict[str, int] = {
-    "us.anthropic.claude-opus-4-6-v1": 1_000_000,
-    "claude-opus-4-6": 1_000_000,
-    "gpt-5.4": 1_000_000,
-    "gpt-5.4-mini": 400_000,
-    "gpt-5.3-codex": 1_000_000,
-    "gpt-5.3-codex-spark": 128_000,
-    "gemini-3-flash-preview": 1_000_000,
-}
 
-# Models that support vision
-VISION_MODELS: set[str] = {
-    "us.anthropic.claude-opus-4-6-v1",
-    "claude-opus-4-6",
-    "gpt-5.4",
-    "gpt-5.4-mini",
-    "gemini-3-flash-preview",
-}
-
-
-def resolve_model(spec: str, settings: Settings) -> Model:
+def resolve_model(spec: str, settings: "Settings") -> Any:
     """Resolve a 'provider/model_id' spec to a Pydantic AI Model."""
+    from pydantic_ai.models.bedrock import BedrockConverseModel
+    from pydantic_ai.models.google import GoogleModel
+    from pydantic_ai.models.openai import OpenAIModel
+    from pydantic_ai.providers.bedrock import BedrockProvider
+    from pydantic_ai.providers.google import GoogleProvider
+    from pydantic_ai.providers.openai import OpenAIProvider
+
+    import boto3
+
     provider = provider_from_spec(spec)
     model_id = model_id_from_spec(spec)
     match provider:
@@ -61,13 +60,12 @@ def resolve_model(spec: str, settings: Settings) -> Model:
                         region_name=settings.aws_region,
                     ),
                 )
-            else:
-                session = boto3.Session()
-                client = session.client("bedrock-runtime", region_name=settings.aws_region)
-                return BedrockConverseModel(
-                    model_id,
-                    provider=BedrockProvider(bedrock_client=client),
-                )
+            session = boto3.Session()
+            client = session.client("bedrock-runtime", region_name=settings.aws_region)
+            return BedrockConverseModel(
+                model_id,
+                provider=BedrockProvider(bedrock_client=client),
+            )
         case "azure":
             return OpenAIModel(
                 model_id,
@@ -98,8 +96,13 @@ def resolve_model(spec: str, settings: Settings) -> Model:
             raise ValueError(f"Unknown provider: {provider}")
 
 
-def resolve_model_settings(spec: str) -> ModelSettings:
+def resolve_model_settings(spec: str) -> Any:
     """Get provider-specific model settings with caching enabled."""
+    from pydantic_ai.models.bedrock import BedrockModelSettings
+    from pydantic_ai.models.google import GoogleModelSettings
+    from pydantic_ai.models.openai import OpenAIModelSettings
+    from pydantic_ai.settings import ModelSettings
+
     provider = spec.split("/", 1)[0]
     match provider:
         case "bedrock":
@@ -110,9 +113,6 @@ def resolve_model_settings(spec: str) -> ModelSettings:
                 bedrock_cache_messages=True,
             )
         case "azure" | "zen":
-            # Azure/Zen use OpenAI chat completions — server-side prompt caching
-            # is automatic, no explicit config needed. Set max_tokens to avoid
-            # reserving the full context window.
             return OpenAIModelSettings(
                 max_tokens=128_000,
             )
@@ -126,32 +126,3 @@ def resolve_model_settings(spec: str) -> ModelSettings:
             )
         case _:
             return ModelSettings(max_tokens=128_000)
-
-
-def model_id_from_spec(spec: str) -> str:
-    """Extract just the model ID from a spec (strips effort suffix)."""
-    parts = spec.split("/")
-    return parts[1] if len(parts) >= 2 else spec
-
-
-def provider_from_spec(spec: str) -> str:
-    """Extract the provider from a spec."""
-    return spec.split("/", 1)[0]
-
-
-def effort_from_spec(spec: str) -> str | None:
-    """Extract effort level from a spec like 'claude-sdk/claude-opus-4-6/max'."""
-    parts = spec.split("/")
-    if len(parts) >= 3 and parts[2] in ("low", "medium", "high", "max"):
-        return parts[2]
-    return None
-
-
-def supports_vision(spec: str) -> bool:
-    """Check if a model spec supports vision."""
-    return model_id_from_spec(spec) in VISION_MODELS
-
-
-def context_window(spec: str) -> int:
-    """Get context window size for a model spec."""
-    return CONTEXT_WINDOWS.get(model_id_from_spec(spec), 200_000)

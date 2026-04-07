@@ -13,6 +13,7 @@ import logging
 import re
 import shlex
 import time
+from typing import Any
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -23,11 +24,11 @@ from claude_agent_sdk import (
     TextBlock,
 )
 
+from backend.claude_code_env import claude_cli_path_or_none, claude_subprocess_env
 from backend.cost_tracker import CostTracker
 from backend.deps import PlatformClient
 from backend.loop_detect import LoopDetector
-from backend.models import model_id_from_spec
-from backend.output_types import solver_output_json_schema
+from backend.model_specs import effort_from_spec, model_id_from_spec
 from backend.prompts import ChallengeMeta, build_prompt, list_distfiles
 from backend.sandbox import DockerSandbox
 from backend.solver_base import CANCELLED, ERROR, FLAG_FOUND, GAVE_UP, QUOTA_ERROR, SolverResult
@@ -260,27 +261,25 @@ class ClaudeSolver:
                     }
             return {}
 
-        from backend.models import effort_from_spec
         effort = effort_from_spec(self.model_spec)
 
-        options = ClaudeAgentOptions(
-            model=self.model_id,
-            system_prompt=system_prompt,
-            effort=effort,
-            # Clear CLAUDECODE to prevent nested-session rejection when run from coordinator
-            env={"CLAUDECODE": ""},
-            allowed_tools=["Bash", "WebFetch", "WebSearch"],
-            permission_mode="bypassPermissions",
-            output_format={"type": "json_schema", "schema": solver_output_json_schema()},
-            hooks={
-                "PreToolUse": [
-                    HookMatcher(hooks=[sandbox_redirect]),
-                ],
-                "PostToolUse": [
-                    HookMatcher(hooks=[trace_post_tool]),
-                ],
+        # No output_format/json_schema — that blocks multi-step Bash + submit_flag.
+        _cli = claude_cli_path_or_none(self.settings)
+        _opts: dict[str, Any] = {
+            "model": self.model_id,
+            "system_prompt": system_prompt,
+            "effort": effort,
+            "env": claude_subprocess_env(self.settings),
+            "allowed_tools": ["Bash", "WebFetch", "WebSearch"],
+            "permission_mode": "bypassPermissions",
+            "hooks": {
+                "PreToolUse": [HookMatcher(hooks=[sandbox_redirect])],
+                "PostToolUse": [HookMatcher(hooks=[trace_post_tool])],
             },
-        )
+        }
+        if _cli:
+            _opts["cli_path"] = _cli
+        options = ClaudeAgentOptions(**_opts)
 
         self._client = ClaudeSDKClient(options=options)
         await self._client.__aenter__()
@@ -295,6 +294,8 @@ class ClaudeSolver:
         t0 = time.monotonic()
         cost_before = self._cost_usd
         steps_before = self._step_count
+        turn_sdk_error: str | None = None
+        last_result: ResultMessage | None = None
 
         try:
             if self._bump_insights:
@@ -321,8 +322,9 @@ class ClaudeSolver:
                             self._findings = block.text[:2000]
 
                 elif isinstance(message, ResultMessage):
+                    last_result = message
                     self._session_id = message.session_id
-                    turn_cost = getattr(message, "total_cost_usd", 0.0)
+                    turn_cost = getattr(message, "total_cost_usd", 0.0) or 0.0
                     self._cost_usd += turn_cost
                     msg_usage = getattr(message, "usage", None) or {}
                     if not isinstance(msg_usage, dict):
@@ -336,8 +338,15 @@ class ClaudeSolver:
                         duration_seconds=time.monotonic() - t0,
                     )
 
+                    if getattr(message, "is_error", False):
+                        err_parts = list(getattr(message, "errors", None) or [])
+                        tail = (message.result or "").strip()
+                        turn_sdk_error = (
+                            " ".join(err_parts) if err_parts else (tail or "Claude SDK reported is_error")
+                        )[:2000]
+
                     output = getattr(message, "structured_output", None)
-                    if output:
+                    if output and isinstance(output, dict):
                         if output.get("type") == "flag_found":
                             self._flag = output.get("flag")
                             self._findings = f"Flag found via {output.get('method', '?')}: {self._flag}"
@@ -346,12 +355,37 @@ class ClaudeSolver:
 
             self.tracer.event("turn_complete", duration=round(time.monotonic() - t0, 1), cost=round(self._cost_usd, 4))
 
+            run_steps = self._step_count - steps_before
+            run_cost = self._cost_usd - cost_before
+
+            if turn_sdk_error:
+                self._findings = turn_sdk_error
+                self.tracer.event("error", error=turn_sdk_error[:500])
+                logger.error("[%s] Claude Code turn failed: %s", self.agent_name, turn_sdk_error[:400])
+                return self._result(ERROR, run_steps=run_steps, run_cost=run_cost)
+
+            if (
+                last_result
+                and run_steps == 0
+                and run_cost == 0
+                and not self._confirmed
+            ):
+                usage = getattr(last_result, "usage", None) or {}
+                if not isinstance(usage, dict):
+                    usage = vars(usage) if hasattr(usage, "__dict__") else {}
+                tok = int(usage.get("input_tokens", 0) or 0) + int(usage.get("output_tokens", 0) or 0)
+                if tok == 0:
+                    logger.warning(
+                        "[%s] Zero-token Claude Code turn (num_turns=%s stop_reason=%s). "
+                        "Check `claude login` / subscription; run `claude doctor` if unsure.",
+                        self.agent_name,
+                        getattr(last_result, "num_turns", None),
+                        getattr(last_result, "stop_reason", None),
+                    )
+
             # Also check if flag was confirmed via submit_flag in bash
             if self._confirmed and self._flag:
                 return self._result(FLAG_FOUND)
-            # Report per-run metrics so broken-solver detection works
-            run_steps = self._step_count - steps_before
-            run_cost = self._cost_usd - cost_before
             return self._result(GAVE_UP, run_steps=run_steps, run_cost=run_cost)
 
         except asyncio.CancelledError:

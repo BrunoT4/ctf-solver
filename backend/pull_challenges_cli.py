@@ -83,7 +83,11 @@ def main(
         )
         sys.exit(1)
 
-    asyncio.run(_pull_all(settings, Path(output), frozenset(only)))
+    try:
+        asyncio.run(_pull_all(settings, Path(output), frozenset(only)))
+    except RuntimeError as e:
+        click.echo(str(e), err=True)
+        sys.exit(1)
 
 
 async def _pull_all(settings: Settings, output_dir: Path, only_names: frozenset[str]) -> None:
@@ -92,9 +96,9 @@ async def _pull_all(settings: Settings, output_dir: Path, only_names: frozenset[
     output_dir.mkdir(parents=True, exist_ok=True)
     client = build_platform_client(settings)
     try:
-        challenges = await client.fetch_all_challenges()
+        name_filter = only_names if only_names else None
+        challenges = await client.fetch_all_challenges(name_filter)
         if only_names:
-            challenges = [c for c in challenges if c.get("name") in only_names]
             missing = only_names - {c.get("name") for c in challenges}
             for name in sorted(missing):
                 click.echo(f"  WARN: no challenge named {name!r} (skipped)", err=True)

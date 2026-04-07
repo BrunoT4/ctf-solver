@@ -81,7 +81,7 @@ Connectors live under [`backend/platforms/`](backend/platforms/): each package r
 
 ### picoCTF (session cookies)
 
-Use [picoCTF](https://picoctf.org/)’s HTTP API (`/api/v1/problems`, `/api/v1/submissions`) with cookies from your logged-in browser. Export cookies as JSON (flat `{"name":"value",...}` or a `[{"name","value"},...]` array), including the `token` cookie so `X-CSRF-Token` can be sent on flag submission.
+Use [play.picoctf.org](https://play.picoctf.org/)’s HTTP API (`/api/challenges`, per-challenge `/api/challenges/<id>/instance/`, and `POST /api/submissions/`) with cookies from your logged-in browser. Export cookies as JSON: flat `{"sessionid":"...","csrftoken":"...",...}`, a `[{"name","value"},...]` array, or a devtools-style object with a **`Request Cookies`** map. The client sends `csrftoken` (or legacy `token`) as `X-CSRFToken` / `X-CSRF-Token` on submissions.
 
 ```bash
 uv run ctf-solve \

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from claude_agent_sdk import (
@@ -26,6 +27,7 @@ from backend.agents.coordinator_core import (
     do_submit_flag,
 )
 from backend.agents.coordinator_loop import build_deps, run_event_loop
+from backend.claude_code_env import claude_cli_path_or_none, claude_subprocess_env
 from backend.config import Settings
 from backend.deps import CoordinatorDeps
 
@@ -114,12 +116,18 @@ async def run_claude_coordinator(
     msg_port: int = 0,
 ) -> dict[str, Any]:
     """Run the Claude Agent SDK coordinator with the shared event loop."""
+    t0 = time.perf_counter()
+    logger.info("Bootstrap: build_deps (platform + challenge scan)...")
     platform_client, cost_tracker, deps = build_deps(
         settings, model_specs, challenges_root, no_submit,
     )
+    logger.info("Bootstrap: build_deps done in %.1fs", time.perf_counter() - t0)
     deps.msg_port = msg_port
 
+    t1 = time.perf_counter()
+    logger.info("Bootstrap: MCP server...")
     mcp_server = _build_coordinator_mcp(deps)
+    logger.info("Bootstrap: MCP ready in %.2fs", time.perf_counter() - t1)
     resolved_model = coordinator_model or "claude-opus-4-6"
 
     allowed = {
@@ -146,19 +154,24 @@ async def run_claude_coordinator(
             }
         }
 
-    options = ClaudeAgentOptions(
-        model=resolved_model,
-        system_prompt=COORDINATOR_PROMPT,
-        env={"CLAUDECODE": ""},
-        mcp_servers={"coordinator": mcp_server},
-        allowed_tools=list(allowed),
-        permission_mode="bypassPermissions",
-        hooks={
-            "PreToolUse": [HookMatcher(hooks=[enforce_allowlist])],
-        },
-    )
+    _cli = claude_cli_path_or_none(settings)
+    _coord_opts: dict[str, Any] = {
+        "model": resolved_model,
+        "system_prompt": COORDINATOR_PROMPT,
+        "env": claude_subprocess_env(settings),
+        "mcp_servers": {"coordinator": mcp_server},
+        "allowed_tools": list(allowed),
+        "permission_mode": "bypassPermissions",
+        "hooks": {"PreToolUse": [HookMatcher(hooks=[enforce_allowlist])]},
+    }
+    if _cli:
+        _coord_opts["cli_path"] = _cli
+    options = ClaudeAgentOptions(**_coord_opts)
 
+    logger.info("Bootstrap: connecting Claude SDK (bundled claude CLI)...")
+    t_sdk = time.perf_counter()
     async with ClaudeSDKClient(options=options) as client:
+        logger.info("Bootstrap: Claude SDK ready in %.1fs", time.perf_counter() - t_sdk)
         async def turn_fn(msg: str) -> None:
             logger.debug(f"Coordinator query: {msg[:200]}")
             await client.query(msg)

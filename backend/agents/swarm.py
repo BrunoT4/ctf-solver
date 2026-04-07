@@ -13,7 +13,7 @@ from backend.agents.solver import Solver
 from backend.cost_tracker import CostTracker
 from backend.deps import PlatformClient
 from backend.message_bus import ChallengeMessageBus
-from backend.models import DEFAULT_MODELS, provider_from_spec
+from backend.model_specs import DEFAULT_MODELS, provider_from_spec
 from backend.prompts import ChallengeMeta
 from backend.solver_base import (
     CANCELLED,
@@ -29,6 +29,28 @@ if TYPE_CHECKING:
     from backend.config import Settings
 
 logger = logging.getLogger(__name__)
+
+_claude_login_error_banner_logged = False
+
+
+def _claude_code_needs_login(findings: str | None) -> bool:
+    """Detect Claude Code CLI auth errors (ResultMessage is_error text from SDK)."""
+    s = (findings or "").lower()
+    return "not logged in" in s or "please run /login" in s
+
+
+def _log_claude_code_login_banner_once() -> None:
+    global _claude_login_error_banner_logged
+    if _claude_login_error_banner_logged:
+        return
+    _claude_login_error_banner_logged = True
+    logger.error(
+        "Claude Code auth failed (not logged in). Fix one of: "
+        "(1) `.../claude_agent_sdk/_bundled/claude auth login` "
+        "(2) `ANTHROPIC_API_KEY` in .env "
+        "(3) `CLAUDE_CODE_CLI_PATH` = output of `which claude` if you use npm’s CLI. "
+        "picoCTF cookies are unrelated."
+    )
 
 
 # Quota fallback: map subscription-backed providers to API-backed equivalents
@@ -269,9 +291,28 @@ class ChallengeSwarm:
                 break
 
             if result.status in (GAVE_UP, ERROR):
-                if result.step_count == 0 and result.cost_usd == 0:
+                # Claude SDK counts steps only on tool calls; a text-only turn can be real
+                # progress but still report 0 steps and $0 cost. Same if structured output
+                # holds a flag that still needs submit confirmation.
+                no_signal = (
+                    result.step_count == 0
+                    and result.cost_usd == 0
+                    and not (result.findings_summary or "").strip()
+                    and result.flag is None
+                )
+                if no_signal:
                     logger.warning(
-                        f"[{self.meta.name}/{model_spec}] Broken (0 steps, $0) — not bumping"
+                        f"[{self.meta.name}/{model_spec}] Broken (0 steps, $0, no findings) — not bumping"
+                    )
+                    break
+
+                if result.status == ERROR and _claude_code_needs_login(result.findings_summary):
+                    _log_claude_code_login_banner_once()
+                    logger.error(
+                        "[%s/%s] %s — stopping this agent (run `claude login`).",
+                        self.meta.name,
+                        model_spec,
+                        (result.findings_summary or "").split("\n", 1)[0][:200],
                     )
                     break
 

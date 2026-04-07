@@ -16,7 +16,10 @@ from backend.ctfd import SubmitResult
 
 logger = logging.getLogger(__name__)
 
-USER_AGENT = "Mozilla/5.0 (compatible; ctf-solver-pico/1.0)"
+USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
 
 
 def load_cookie_jar(path: str | Path) -> dict[str, str]:
@@ -24,6 +27,7 @@ def load_cookie_jar(path: str | Path) -> dict[str, str]:
 
     Supported shapes:
     - ``{\"session\": \"...\", \"token\": \"...\"}`` (flat name -> value)
+    - ``{\"Request Cookies\": {\"sessionid\": \"...\", \"csrftoken\": \"...\"}}`` (devtools export)
     - ``{\"cookies\": [{\"name\": \"...\", \"value\": \"...\"}, ...]}``
     - ``[{\"name\": \"...\", \"value\": \"...\"}, ...]`` (browser extension export)
     """
@@ -38,7 +42,14 @@ def load_cookie_jar(path: str | Path) -> dict[str, str]:
             raise ValueError("Cookie list is empty or missing name/value entries")
         return out
     if isinstance(data, dict):
-        inner = data.get("cookies")
+        rc = data.get("Request Cookies")
+        if isinstance(rc, dict) and rc:
+            data = {
+                str(k): str(v)
+                for k, v in rc.items()
+                if v is not None and not isinstance(v, (dict, list))
+            }
+        inner = data.get("cookies") if isinstance(data, dict) else None
         if isinstance(inner, list):
             out = {}
             for item in inner:
@@ -47,7 +58,14 @@ def load_cookie_jar(path: str | Path) -> dict[str, str]:
             if not out:
                 raise ValueError("cookies[] is empty or invalid")
             return out
-        return {str(k): str(v) for k, v in data.items() if v is not None}
+        if isinstance(data, dict):
+            return {
+                str(k): str(v)
+                for k, v in data.items()
+                if k not in ("cookies", "Request Cookies")
+                and v is not None
+                and not isinstance(v, (dict, list))
+            }
     raise ValueError("Cookie file must be a JSON object or array")
 
 
@@ -67,71 +85,157 @@ class PicoCTFClient:
             if not self.cookies_path:
                 raise RuntimeError("picoCTF requires cookies_path (exported session cookies)")
             self._cookies = load_cookie_jar(self.cookies_path)
+            origin = self.base_url.rstrip("/")
             self._client = httpx.AsyncClient(
-                base_url=self.base_url.rstrip("/"),
+                base_url=origin,
                 cookies=self._cookies,
                 follow_redirects=True,
                 timeout=60.0,
-                headers={"User-Agent": USER_AGENT},
+                headers={
+                    "User-Agent": USER_AGENT,
+                    "Accept": "application/json",
+                    "Referer": origin + "/",
+                },
             )
         return self._client
 
     def _csrf_headers(self) -> dict[str, str]:
-        token = self._cookies.get("token", "")
+        token = (self._cookies.get("csrftoken") or self._cookies.get("token") or "").strip()
         h: dict[str, str] = {"Content-Type": "application/json"}
         if token:
             h["X-CSRF-Token"] = token
+            h["X-CSRFToken"] = token
         return h
 
     async def _get_json(self, path: str) -> Any:
         client = await self._ensure_client()
         resp = await client.get(path)
         if resp.status_code == 401:
-            raise RuntimeError("picoCTF: 401 Unauthorized — refresh exported cookies (session/token).")
+            raise RuntimeError(
+                "picoCTF: 401 Unauthorized — refresh exported cookies (sessionid / csrftoken)."
+            )
         resp.raise_for_status()
         return resp.json()
 
-    async def fetch_challenge_stubs(self) -> list[dict[str, Any]]:
-        problems = await self._get_json("/api/v1/problems")
-        if not isinstance(problems, list):
-            logger.warning("Unexpected /problems shape: %s", type(problems))
+    async def _iter_challenge_list_pages(self) -> list[dict[str, Any]]:
+        """DRF-paginated GET /api/challenges."""
+        client = await self._ensure_client()
+        out: list[dict[str, Any]] = []
+        next_url: str | None = "/api/challenges?page_size=100"
+        while next_url:
+            resp = await client.get(next_url)
+            if resp.status_code == 401:
+                raise RuntimeError(
+                    "picoCTF: 401 Unauthorized — refresh exported cookies (sessionid / csrftoken)."
+                )
+            resp.raise_for_status()
+            page = resp.json()
+            if not isinstance(page, dict):
+                break
+            batch = page.get("results")
+            if isinstance(batch, list):
+                out.extend(c for c in batch if isinstance(c, dict))
+            nxt = page.get("next")
+            if nxt:
+                parsed = urlparse(str(nxt))
+                next_url = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+            else:
+                next_url = None
+        return out
+
+    @staticmethod
+    def _category_name(ch: dict[str, Any]) -> str:
+        c = ch.get("category")
+        if isinstance(c, dict):
+            return str(c.get("name") or "")
+        return str(c) if c else ""
+
+    @staticmethod
+    def _tag_names(ch: dict[str, Any]) -> list[str]:
+        tags = ch.get("tags")
+        if not isinstance(tags, list):
             return []
+        names: list[str] = []
+        for t in tags:
+            if isinstance(t, dict) and t.get("name"):
+                names.append(str(t["name"]))
+            elif isinstance(t, str):
+                names.append(t)
+        return names
+
+    async def _merge_with_instance(self, summary: dict[str, Any]) -> dict[str, Any]:
+        cid = summary.get("id")
+        if cid is None:
+            return dict(summary)
+        inst: dict[str, Any] = {}
+        try:
+            raw = await self._get_json(f"/api/challenges/{int(cid)}/instance/")
+            if isinstance(raw, dict):
+                inst = raw
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (403, 404):
+                logger.warning(
+                    "picoCTF: skipping instance for challenge %s (%s)",
+                    cid,
+                    e.response.status_code,
+                )
+            else:
+                raise
+        merged = dict(summary)
+        merged["pid"] = str(cid)
+        merged["description"] = inst.get("description") or merged.get("description") or ""
+        merged["hints"] = inst.get("hints") or []
+        eps = inst.get("endpoints")
+        if isinstance(eps, list) and eps:
+            merged["connection_info"] = "\n".join(str(e) for e in eps)
+        elif isinstance(eps, str) and eps:
+            merged["connection_info"] = eps
+        merged["value"] = merged.get("event_points", merged.get("score", 0))
+        merged["score"] = merged["value"]
+        merged["category"] = self._category_name(merged)
+        merged["tags"] = self._tag_names(merged)
+        merged["solves"] = merged.get("users_solved", 0)
+        merged["solved"] = bool(merged.get("solved_by_user"))
+        return merged
+
+    async def fetch_challenge_stubs(self) -> list[dict[str, Any]]:
+        summaries = await self._iter_challenge_list_pages()
         stubs: list[dict[str, Any]] = []
-        for p in problems:
-            if not isinstance(p, dict):
-                continue
-            name = p.get("name", "")
+        for p in summaries:
+            name = str(p.get("name") or "")
+            cid = p.get("id")
             stubs.append(
                 {
                     "name": name,
-                    "id": p.get("pid", name),
-                    "type": "hidden" if p.get("disabled") else "standard",
+                    "id": str(cid) if cid is not None else name,
+                    "type": "standard" if not p.get("retired") else "hidden",
                 }
             )
-            if p.get("pid") and name:
-                self._pid_by_name[name] = str(p["pid"])
+            if cid is not None and name:
+                self._pid_by_name[name] = str(cid)
         return stubs
 
-    async def fetch_all_challenges(self) -> list[dict[str, Any]]:
-        problems = await self._get_json("/api/v1/problems")
-        if not isinstance(problems, list):
-            return []
+    async def fetch_all_challenges(
+        self, only_names: frozenset[str] | None = None
+    ) -> list[dict[str, Any]]:
+        summaries = await self._iter_challenge_list_pages()
+        if only_names:
+            summaries = [s for s in summaries if str(s.get("name", "")) in only_names]
         out: list[dict[str, Any]] = []
-        for p in problems:
-            if not isinstance(p, dict):
-                continue
-            d = dict(p)
-            d["value"] = p.get("score", 0)
-            if p.get("pid") and p.get("name"):
-                self._pid_by_name[str(p["name"])] = str(p["pid"])
-            out.append(d)
+        for p in summaries:
+            merged = await self._merge_with_instance(p)
+            if merged.get("name"):
+                self._pid_by_name[str(merged["name"])] = str(merged.get("pid", ""))
+            out.append(merged)
         return out
 
     async def fetch_solved_names(self) -> set[str]:
-        problems = await self._get_json("/api/v1/problems")
-        if not isinstance(problems, list):
-            return set()
-        return {str(p["name"]) for p in problems if isinstance(p, dict) and p.get("solved") is True}
+        summaries = await self._iter_challenge_list_pages()
+        return {
+            str(p["name"])
+            for p in summaries
+            if isinstance(p, dict) and p.get("solved_by_user") is True and p.get("name")
+        }
 
     async def _resolve_pid(self, challenge_name: str) -> str:
         if challenge_name in self._pid_by_name:
@@ -143,14 +247,20 @@ class PicoCTFClient:
 
     async def submit_flag(self, challenge_name: str, flag: str) -> SubmitResult:
         pid = await self._resolve_pid(challenge_name)
+        try:
+            challenge_id = int(pid)
+        except ValueError as e:
+            raise RuntimeError(f"picoCTF: invalid challenge id {pid!r}") from e
         client = await self._ensure_client()
         resp = await client.post(
-            "/api/v1/submissions",
-            json={"pid": pid, "key": flag.strip(), "method": "agent"},
+            "/api/submissions/",
+            json={"challenge": challenge_id, "flag": flag.strip()},
             headers=self._csrf_headers(),
         )
         if resp.status_code == 403:
-            raise RuntimeError("picoCTF: 403 — CSRF failed; ensure `token` cookie is exported.")
+            raise RuntimeError(
+                "picoCTF: 403 — CSRF or permission denied; export `csrftoken` (and sessionid)."
+            )
         if resp.status_code == 401:
             raise RuntimeError("picoCTF: 401 Unauthorized — refresh cookies.")
         try:
@@ -164,17 +274,20 @@ class PicoCTFClient:
             message = str(data.get("message", resp.text))
             return SubmitResult("incorrect", message, f"SUBMIT ERROR — {message}")
 
-        message = str(data.get("message", ""))
+        message = str(data.get("message", data.get("detail", "")))
+        if isinstance(data.get("detail"), list):
+            message = json.dumps(data["detail"])
         if message and "can't submit flags" in message.lower():
             return SubmitResult("incorrect", message, f"SUBMIT ERROR — {message}")
 
         correct = data.get("correct")
         if correct is True:
-            if "already" in message.lower():
+            historical = data.get("historical")
+            if historical is True:
                 return SubmitResult(
                     "already_solved",
                     message,
-                    f'ALREADY SOLVED — "{flag.strip()}" {message}'.strip(),
+                    f'ALREADY SOLVED — "{flag.strip()}"'.strip(),
                 )
             return SubmitResult(
                 "correct",

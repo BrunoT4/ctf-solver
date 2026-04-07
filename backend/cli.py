@@ -14,7 +14,7 @@ import click
 from rich.console import Console
 
 from backend.config import Settings
-from backend.models import DEFAULT_MODELS
+from backend.model_specs import DEFAULT_MODELS
 
 console = Console()
 
